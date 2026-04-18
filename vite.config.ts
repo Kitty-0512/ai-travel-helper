@@ -5,7 +5,7 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
 
-  base: '/ai-travel-helper/',
+  base: './',
 
   server: {
     host: '0.0.0.0',
