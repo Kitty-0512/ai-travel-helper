@@ -97,6 +97,16 @@
 
         <!-- 景点清单 -->
         <div v-else-if="places.length > 0">
+        <!-- 路径优化结果 -->
+        <div v-if="savedKm !== null && savedKm > 0" 
+            class="rounded-lg bg-green-50 border border-green-200 px-3 py-2 text-xs text-green-700 flex items-center gap-1.5">
+          <span>✅</span>
+          <span>路径已优化，节省约 <b>{{ savedKm }} 公里</b></span>
+        </div>
+        <div v-else-if="savedKm === 0"
+            class="rounded-lg bg-gray-50 border border-gray-200 px-3 py-2 text-xs text-gray-500">
+          当前顺序已是最优路线
+        </div>
           <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">景点清单</h2>
           <ul class="flex flex-col gap-1.5">
             <li
@@ -185,6 +195,7 @@
 import { ref, computed, nextTick } from "vue"
 import Map from "./components/Map.vue"
 import { generateTravelPlan } from "./api/ai"
+import { optimizeRoute, calcTotalDistance } from "./utils/tsp"
 import { marked } from "marked"
 import html2canvas from "html2canvas-pro"
 import jsPDF from "jspdf"
@@ -211,6 +222,8 @@ const places = ref<string[]>([])
 const dayGroups = ref<string[][]>([])
 const itineraryData = ref<ItineraryData>({ days: [], allPlaces: [] })
 const loading = ref(false)
+const savedKm = ref<number | null>(null)       // 节省的公里数
+const optimizedPlaces = ref<string[]>([])       // 优化后的景点顺序
 
 const printRef = ref<HTMLElement | null>(null)
 const mapRef = ref<any>(null)
@@ -290,12 +303,23 @@ async function generatePlan() {
     const parsed = parseItineraryJson(plan.value)
 
     if (parsed) {
-      itineraryData.value = parsed
-      places.value = parsed.allPlaces
-      dayGroups.value = parsed.days.map((d) =>
-        [d.morning, d.afternoon, d.evening].filter(Boolean)
-      )
-    }
+  itineraryData.value = parsed
+  places.value = parsed.allPlaces
+  dayGroups.value = parsed.days.map((d) =>
+    [d.morning, d.afternoon, d.evening].filter(Boolean)
+  )
+
+  // 调用高德地图 geocode 获取景点坐标，再做路径优化
+  await nextTick()
+  const coords = await mapRef.value?.getPlaceCoords?.(parsed.allPlaces)
+  if (coords && coords.length >= 2) {
+    const originalKm = calcTotalDistance(coords)
+    const result = optimizeRoute(coords, parsed.allPlaces)
+    const saved = originalKm - result.totalKm
+    savedKm.value = saved > 0 ? saved : 0
+    optimizedPlaces.value = result.names
+  }
+}
 
     await nextTick()
     mapRef.value?.flyToDestination?.(destination.value)
