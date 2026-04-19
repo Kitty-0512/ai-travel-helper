@@ -73,33 +73,6 @@
 import { ref, onMounted, onUnmounted, watch } from "vue"
 import AMapLoader from "@amap/amap-jsapi-loader"
 
-// 通过高德地图 POI 搜索获取景点坐标
-const getPlaceCoords = async (placeNames: string[]): Promise<[number, number][] | null> => {
-  if (!map) return null
-  
-  const coords: [number, number][] = []
-  
-  for (const name of placeNames) {
-    await new Promise<void>((resolve) => {
-      AMap.plugin('AMap.PlaceSearch', () => {
-        const placeSearch = new AMap.PlaceSearch({ city: props.destination })
-        placeSearch.search(name, (status: string, result: any) => {
-          if (status === 'complete' && result.poiList?.pois?.length > 0) {
-            const poi = result.poiList.pois[0]
-            coords.push([poi.location.lng, poi.location.lat])
-          }
-          resolve()
-        })
-      })
-    })
-  }
-  
-  return coords.length === placeNames.length ? coords : null
-}
-
-// 暴露给父组件调用
-defineExpose({ flyToDestination, getPlaceCoords })
-
 const props = defineProps<{
   places: string[]
   destination: string
@@ -404,14 +377,12 @@ async function renderPlaces(places: string[]) {
     // ---- 多日分色模式 ----
     dayColors.value = props.dayGroups!.map((_, i) => DAY_COLORS[i % DAY_COLORS.length])
 
-    let globalIndex = 0
     for (let day = 0; day < props.dayGroups!.length; day++) {
       const color = DAY_COLORS[day % DAY_COLORS.length]
       const dayItems = await searchAllPlaces(props.dayGroups![day])
 
       dayItems.forEach((item, i) => {
         addMarker(item.coord, `D${day + 1}-${i + 1}`, item.name, color)
-        globalIndex++
       })
 
       if (dayItems.length > 1) {
