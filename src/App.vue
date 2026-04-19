@@ -333,59 +333,88 @@ async function generatePlan() {
 }
 
 async function exportPDF() {
-  if (!printRef.value) return
+  if (!printRef.value || exporting.value) return
+  exporting.value = true
 
   try {
     const el = printRef.value
+
     const original = {
       height: el.style.height,
       overflow: el.style.overflow,
       maxHeight: el.style.maxHeight,
+      position: el.style.position,
+      width: el.style.width,
     }
 
     el.style.height = "auto"
     el.style.overflow = "visible"
     el.style.maxHeight = "none"
+    el.style.position = "relative"
+    el.style.width = "800px"   // 统一固定宽度，桌面和手机一致
 
     await nextTick()
+    await new Promise((r) => requestAnimationFrame(r))
 
     const canvas = await html2canvas(el, {
-      scale: 2,
+      scale: 1,               // scale 固定 1，宽度已经是 800px 足够清晰
       useCORS: true,
       backgroundColor: "#ffffff",
-      scrollY: 0,
-      width: el.scrollWidth,
+      scrollX: 0,
+      scrollY: -window.scrollY,
+      width: 800,             // 明确告诉 html2canvas 截 800px 宽
       height: el.scrollHeight,
-      windowWidth: el.scrollWidth,
+      windowWidth: 800,
       windowHeight: el.scrollHeight,
+      logging: false,
     })
 
     el.style.height = original.height
     el.style.overflow = original.overflow
     el.style.maxHeight = original.maxHeight
+    el.style.position = original.position
+    el.style.width = original.width
 
+    // A4 尺寸：210mm x 297mm
     const pdf = new jsPDF("p", "mm", "a4")
-    const pdfW = pdf.internal.pageSize.getWidth()
-    const pdfH = pdf.internal.pageSize.getHeight()
-    const ratio = pdfW / canvas.width
-    const imgH = canvas.height * ratio
-    let heightLeft = imgH
-    let position = 0
+    const pdfW = pdf.internal.pageSize.getWidth()   // 210
+    const pdfH = pdf.internal.pageSize.getHeight()  // 297
 
-    pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, position, pdfW, imgH)
-    heightLeft -= pdfH
+    // canvas 是 800px 宽，映射到 210mm
+    const ratio = pdfW / canvas.width       // 210 / 800 ≈ 0.2625
+    const totalImgH = canvas.height * ratio // canvas 总高度换算成 mm
 
-    while (heightLeft > 0) {
-      position = heightLeft - imgH
-      pdf.addPage()
-      pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, position, pdfW, imgH)
-      heightLeft -= pdfH
+    // 每页截取多少 canvas 像素高度
+    const pageHeightPx = Math.floor(pdfH / ratio)  // 297 / 0.2625 ≈ 1131px
+
+    let page = 0
+    while (page * pageHeightPx < canvas.height) {
+      if (page > 0) pdf.addPage()
+
+      // 每次截取一页高度的 canvas 片段
+      const srcY = page * pageHeightPx
+      const srcH = Math.min(pageHeightPx, canvas.height - srcY)
+
+      const pageCanvas = document.createElement("canvas")
+      pageCanvas.width = canvas.width
+      pageCanvas.height = srcH
+      const ctx = pageCanvas.getContext("2d")!
+      ctx.drawImage(canvas, 0, srcY, canvas.width, srcH, 0, 0, canvas.width, srcH)
+
+      const imgData = pageCanvas.toDataURL("image/jpeg", 0.92)
+      const imgHmm = srcH * ratio   // 这一片换算成 mm
+      pdf.addImage(imgData, "JPEG", 0, 0, pdfW, imgHmm)
+
+      page++
     }
 
     pdf.save(`${destination.value || "旅行行程"}.pdf`)
+
   } catch (err) {
     console.error("PDF 导出失败:", err)
-    alert("PDF 导出失败，请查看控制台（F12）")
+    alert("PDF 导出失败，请稍后重试")
+  } finally {
+    exporting.value = false
   }
 }
 </script>
