@@ -325,15 +325,20 @@ export function useAgent() {
  */
 function cleanJsonBlock(raw: string): string {
   let cleaned = raw
-  // 移除 ```json ... ``` 代码块（完整或未闭合）
+  // 移除 ```json ... ``` 代码块
   cleaned = cleaned.replace(/```json[\s\S]*?```/g, '')
   cleaned = cleaned.replace(/```json[\s\S]*$/g, '')
-  // 移除 LLM 误输出的 XML 工具调用块（完整或未闭合）
-  // 兼容各种格式：<invoke ...> <parameter ...>...</parameter> </invoke>
-  cleaned = cleaned.replace(/<\s*invoke\b[\s\S]*?<\s*\/\s*invoke\s*>/gi, '')
-  cleaned = cleaned.replace(/<\s*invoke\b[\s\S]*$/gi, '')
-  // 单独出现的 parameter / function_call 片段也清掉
-  cleaned = cleaned.replace(/<\s*parameter\b[^>]*>[\s\S]*?<\s*\/\s*parameter\s*>/gi, '')
-  cleaned = cleaned.replace(/<\s*\/?\s*(parameter|function_call|tool_call|invoke)\b[^>]*\/?\s*>/gi, '')
+  // 反复剥离 XML 标签（处理嵌套 invoke / parameter / function_call 等），
+  // 保留内部文本内容，直到不再变化
+  const tagRe = /<([a-zA-Z_][a-zA-Z0-9_.-]*)(?:\s[^>]*)?>([\s\S]*?)<\/\1>/g
+  for (let i = 0; i < 10; i++) {
+    const prev = cleaned
+    cleaned = cleaned.replace(tagRe, '$2')
+    if (cleaned === prev) break
+  }
+  // 自闭合标签 <xxx/>
+  cleaned = cleaned.replace(/<[a-zA-Z_][a-zA-Z0-9_.-]*(?:\s[^>]*)?\s*\/>/g, '')
+  // 未闭合残留
+  cleaned = cleaned.replace(/<[a-zA-Z_][a-zA-Z0-9_.-]*(?:\s[^>]*)?>[\s\S]*$/g, '')
   return cleaned.trim()
 }
