@@ -1,0 +1,23 @@
+.git
+.gitignore
+README.md
+docs/
+
+# 前端依赖与产物由构建阶段自行生成
+node_modules
+dist/
+pnpm-lock.yaml
+
+# 后端本地产物
+backend/__pycache__
+**/__pycache__
+backend/.env
+backend/venv
+backend/.venv
+**/*.pyc
+backend/logs/
+backend/data/
+
+# 图片和文档
+images/
+*.docx

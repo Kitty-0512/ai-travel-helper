@@ -1,0 +1,39 @@
+# ============================================================
+# AI Travel Helper — FastAPI Backend
+# Python >= 3.11
+# ============================================================
+
+# --- Web 框架 & 服务器 ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# --- 异步 HTTP 客户端（调 DeepSeek + 高德 API）---
+httpx==0.28.1
+
+# --- 数据验证 & 配置管理 ---
+pydantic==2.10.4
+pydantic-settings==2.7.0
+python-dotenv==1.0.1
+
+# --- SSE 流式响应 ---
+sse-starlette==2.2.1
+
+# --- 限流 ---
+slowapi==0.1.9
+
+# --- OpenAI 类型定义（仅用于类型提示，不调 OpenAI API）---
+openai==1.59.6
+
+# --- 高性能 JSON 序列化（可选，推荐）---
+orjson==3.10.12
+
+# --- Agent Memory：短期 Redis + 长期 PostgreSQL/pgvector ---
+redis==5.2.1
+asyncpg==0.30.0
+
+# --- MCP (Model Context Protocol) ---
+mcp>=1.0,<2
+
+# --- Testing ---
+pytest==8.4.1
+pytest-asyncio==1.1.0

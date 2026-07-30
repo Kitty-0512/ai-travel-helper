@@ -1,0 +1,338 @@
+/**
+ * src/composables/useAgent.ts
+ *
+ * 职责：管理 AI Agent 的完整生命周期
+ *   - 调用 generateItinerary / continueChat 发起 SSE 请求
+ *   - 处理所有 SSE 事件，更新响应式状态
+ *   - 支持 AbortController 取消
+ *   - 支持多轮对话（continueGenerate）
+ *
+ * 暴露给 App.vue 的状态和方法：
+ *   state        → 所有响应式状态
+ *   startGenerate(params)  → 首次生成
+ *   continueGenerate(msg)  → 多轮修改
+ *   abort()      → 取消当前请求
+ *   reset()      → 清空所有状态
+ */
+
+import { reactive, ref } from 'vue'
+import {
+  generateItinerary,
+  continueChat,
+  type AgentSSEEvent,
+  type GenerateParams,
+  type ItineraryPayload,
+  type DonePayload,
+  type ToolCallPayload,
+  type ToolResultPayload,
+  type ErrorPayload,
+} from '@/api/agent'
+
+// ============================================================
+// 类型
+// ============================================================
+
+/** 一条工具调用记录（tool_call 开始 → tool_result 结束） */
+export interface ToolCallRecord {
+  tool: string
+  args: Record<string, unknown>
+  message?: string
+  resultPreview?: Record<string, unknown>
+  /** 状态：running → success → error */
+  status: 'running' | 'success' | 'error'
+  /** 调用开始时间 */
+  startTime: number
+  duration?: number
+}
+
+/** 完整的 Agent 状态 */
+export interface AgentState {
+  /** 是否正在请求中 */
+  loading: boolean
+  /** 当前状态文字（如 "正在搜索北京的景点…"） */
+  statusText: string
+  /** 当前是第几步 */
+  step: number
+  /** LLM 流式输出的原始文本（含 JSON 块） */
+  rawMarkdown: string
+  /** 过滤 JSON 后的纯 Markdown 文本 */
+  cleanMarkdown: string
+  /** 本次所有工具调用记录 */
+  toolCalls: ToolCallRecord[]
+  /** itinerary_json 事件的结构化数据 */
+  itinerary: ItineraryPayload | null
+  /** done 事件的完整载荷 */
+  donePayload: DonePayload | null
+  /** 会话 ID（用于多轮修改） */
+  sessionId: string
+  /** 请求 ID（用于 trace 查询） */
+  requestId: string
+  /** 错误信息 */
+  error: ErrorPayload | null
+}
+
+// ============================================================
+// 初始状态工厂
+// ============================================================
+
+function createInitialState(): AgentState {
+  return {
+    loading: false,
+    statusText: '',
+    step: 0,
+    rawMarkdown: '',
+    cleanMarkdown: '',
+    toolCalls: [],
+    itinerary: null,
+    donePayload: null,
+    sessionId: '',
+    requestId: '',
+    error: null,
+  }
+}
+
+// ============================================================
+// Composable
+// ============================================================
+
+export function useAgent() {
+  const state = reactive<AgentState>(createInitialState())
+
+  /** AbortController 实例，用于取消 */
+  let abortController: AbortController | null = null
+
+  /** 已累积的完整 messages（用于多轮续接，可选） */
+  const conversationHistory = ref<{ role: string; content: string }[]>([])
+
+  // ==========================================================
+  // SSE 事件处理器
+  // ==========================================================
+
+  function handleEvent(event: AgentSSEEvent): void {
+    console.log('收到事件:', event.type, event.data)
+    switch (event.type) {
+      // ── Agent 思考状态 ──
+      case 'agent_think': {
+        state.statusText = event.data as string
+        state.step += 1
+        break
+      }
+
+      // ── 工具调用开始 ──
+      case 'tool_call': {
+        const payload = event.data as ToolCallPayload
+        const record: ToolCallRecord = {
+          tool: payload.tool,
+          args: payload.args,
+          message: payload.message,
+          status: 'running',
+          startTime: Date.now(),
+        }
+        state.toolCalls.push(record)
+        state.statusText = payload.message || `🔧 正在调用 ${payload.tool}...`
+        break
+      }
+
+      // ── 工具调用结束 ──
+      case 'tool_result': {
+        const payload = event.data as ToolResultPayload
+        // 找到最近一个同名的 calling 记录并更新
+        const record = state.toolCalls
+          .filter((t) => t.status === 'running')
+          .find((t) => t.tool === payload.tool)
+        if (record) {
+          record.resultPreview = payload.result_preview
+          record.message = payload.message
+          record.duration = payload.duration
+          record.status = payload.status
+        }
+        state.statusText = payload.message || (payload.status === 'error'
+          ? `❌ ${payload.tool} 失败`
+          : `✅ ${payload.tool} 完成`)
+        break
+      }
+
+      // ── LLM 流式文本 ──
+      case 'chunk': {
+        const text = event.data as string
+        state.rawMarkdown += text
+        // 实时去除 JSON 块，保留干净文本
+        state.cleanMarkdown = cleanJsonBlock(state.rawMarkdown)
+        break
+      }
+
+      // ── 结构化行程 JSON ──
+      case 'itinerary_json': {
+        state.itinerary = event.data as ItineraryPayload
+        state.statusText = '📋 行程数据已生成'
+        break
+      }
+
+      // ── 完成 ──
+      case 'done': {
+        const payload = event.data as DonePayload
+        state.donePayload = payload
+        state.sessionId = payload.session_id || ''
+        state.requestId = payload.request_id || ''
+        state.loading = false
+        state.statusText = '✅ 行程生成完成'
+        break
+      }
+
+      // ── 错误 ──
+      case 'error': {
+        const payload = event.data as ErrorPayload
+        state.error = payload
+        state.loading = false
+        if (payload.code === 'STREAM_INTERRUPTED' || payload.code === 'STREAM_ERROR') {
+          state.statusText = '⚠️ 连接中断，可重新点击生成'
+        } else {
+          state.statusText = '❌ 生成失败'
+        }
+        break
+      }
+    }
+  }
+
+  // ==========================================================
+  // 公开方法
+  // ==========================================================
+
+  /**
+   * 首次生成行程。
+   */
+  async function startGenerate(params: GenerateParams): Promise<void> {
+    // 重置状态
+    Object.assign(state, createInitialState())
+    state.loading = true
+    state.statusText = '🚀 正在启动 AI 旅行规划师...'
+
+    abortController = new AbortController()
+
+    try {
+      await generateItinerary(params, handleEvent, abortController.signal)
+    } catch (err: unknown) {
+      if ((err as Error).name !== 'AbortError') {
+        state.error = {
+          code: 'UNKNOWN',
+          message: `未预期的错误: ${(err as Error).message}`,
+        }
+      }
+    } finally {
+      state.loading = false
+      abortController = null
+    }
+  }
+
+  /**
+   * 多轮修改：在已有行程上继续对话。
+   */
+  async function continueGenerate(message: string): Promise<void> {
+    if (!state.sessionId) {
+      state.error = { code: 'NO_SESSION', message: '没有可用的会话，请先生成行程' }
+      return
+    }
+
+    state.loading = true
+    state.statusText = '🔄 正在根据你的意见修改行程...'
+    state.error = null
+
+    abortController = new AbortController()
+
+    try {
+      await continueChat(state.sessionId, message, handleEvent, abortController.signal)
+    } catch (err: unknown) {
+      if ((err as Error).name !== 'AbortError') {
+        state.error = {
+          code: 'UNKNOWN',
+          message: `未预期的错误: ${(err as Error).message}`,
+        }
+      }
+    } finally {
+      state.loading = false
+      abortController = null
+    }
+  }
+
+  /**
+   * 从历史会话加载行程数据到当前 state。
+   */
+  function loadSession(data: {
+    sessionId: string
+    destination: string
+    days: number
+    styles: string[]
+    itinerary: import('@/api/agent').ItineraryPayload | null
+    placesDetail: { name: string; lng: number; lat: number }[] | null
+    markdownText?: string
+  }): void {
+    Object.assign(state, createInitialState())
+    state.sessionId = data.sessionId
+    state.itinerary = data.itinerary
+    if (data.markdownText) {
+      state.rawMarkdown = data.markdownText
+      state.cleanMarkdown = cleanJsonBlock(data.markdownText)
+    }
+    if (data.placesDetail && data.placesDetail.length > 0) {
+      state.donePayload = {
+        destination: data.destination,
+        days: data.days,
+        places_count: data.placesDetail.length,
+        places_detail: data.placesDetail,
+        session_id: data.sessionId,
+      }
+    }
+  }
+
+  /**
+   * 取消当前请求。
+   */
+  function abort(): void {
+    if (abortController) {
+      abortController.abort()
+      abortController = null
+    }
+    state.loading = false
+    state.statusText = '⏹️ 已取消'
+  }
+
+  /**
+   * 清空所有状态。
+   */
+  function reset(): void {
+    abort()
+    Object.assign(state, createInitialState())
+  }
+
+  // ==========================================================
+  // 返回
+  // ==========================================================
+
+  return {
+    state,
+    startGenerate,
+    continueGenerate,
+    loadSession,
+    abort,
+    reset,
+  }
+}
+
+// ============================================================
+// 工具函数：从 Markdown 中移除 JSON 代码块
+// ============================================================
+
+/**
+ * 实时去除 Markdown 文本中的 ```json ... ``` 代码块以及 LLM 误输出的 invoke XML。
+ * 在流式输出过程中 JSON / XML 可能还不完整，正则兜底。
+ */
+function cleanJsonBlock(raw: string): string {
+  let cleaned = raw
+  // 移除 ```json ... ``` 代码块（完整或未闭合）
+  cleaned = cleaned.replace(/```json[\s\S]*?```/g, '')
+  cleaned = cleaned.replace(/```json[\s\S]*$/g, '')
+  // 移除 LLM 误输出的 <invoke>...</invoke> XML 块
+  cleaned = cleaned.replace(/<invoke\b[^>]*>[\s\S]*?<\/invoke>/g, '')
+  cleaned = cleaned.replace(/<invoke\b[\s\S]*$/g, '')
+  return cleaned.trim()
+}

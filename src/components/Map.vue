@@ -112,6 +112,23 @@ const AMAP_SECURITY_CODE = import.meta.env.VITE_AMAP_SECURITY_CODE as string
 const coordCache = new Map<string, [number, number]>()
 const poiCache = new Map<string, any>()
 
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+}
+
+function buildAmapNavigationUrl(name: string, coord: [number, number]): string {
+  return `https://uri.amap.com/navigation?to=${coord[0]},${coord[1]},${encodeURIComponent(name)}&mode=car&src=ai-travel-helper&coordinate=gaode&callnative=0`
+}
+
+function buildTicketUrl(name: string): string {
+  return `https://you.ctrip.com/searchsite/Sight?query=${encodeURIComponent(name)}`
+}
+
 async function initMap() {
   ;(window as any)._AMapSecurityConfig = { securityJsCode: AMAP_SECURITY_CODE }
 
@@ -258,11 +275,32 @@ function addMarker(
 
   marker.on("click", () => {
     const poi = poiCache.get(name)
-    const content = `<div style="padding:10px 14px;min-width:160px;font-size:13px;line-height:1.9">
-      <div style="font-weight:600;font-size:14px;margin-bottom:4px;color:#1f2937">${label}. ${name}</div>
-      ${poi?.address ? `<div style="color:#6b7280">📍 ${poi.address}</div>` : ""}
-      ${poi?.tel ? `<div style="color:#6b7280">📞 ${poi.tel}</div>` : ""}
-      ${poi?.type ? `<div style="color:#6b7280">🏷️ ${poi.type.split(";")[0]}</div>` : ""}
+    const safeName = escapeHtml(name)
+    const safeAddress = poi?.address ? escapeHtml(poi.address) : ""
+    const safeTel = poi?.tel ? escapeHtml(poi.tel) : ""
+    const safeType = poi?.type ? escapeHtml(poi.type.split(";")[0]) : ""
+    const navUrl = buildAmapNavigationUrl(name, coord)
+    const ticketUrl = buildTicketUrl(name)
+    const content = `<div style="padding:12px 14px;min-width:220px;font-size:13px;line-height:1.9">
+      <div style="font-weight:600;font-size:14px;margin-bottom:4px;color:#1f2937">${label}. ${safeName}</div>
+      ${safeAddress ? `<div style="color:#6b7280">📍 ${safeAddress}</div>` : ""}
+      <div style="color:#6b7280">🧭 坐标：<a href="${navUrl}" target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:none">${coord[0].toFixed(6)}, ${coord[1].toFixed(6)}</a></div>
+      ${safeTel ? `<div style="color:#6b7280">📞 ${safeTel}</div>` : ""}
+      ${safeType ? `<div style="color:#6b7280">🏷️ ${safeType}</div>` : ""}
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+        <a
+          href="${navUrl}"
+          target="_blank"
+          rel="noopener noreferrer"
+          style="display:inline-flex;align-items:center;justify-content:center;padding:6px 10px;border-radius:9999px;background:#2563eb;color:#fff;text-decoration:none;font-weight:600"
+        >开始导航</a>
+        <a
+          href="${ticketUrl}"
+          target="_blank"
+          rel="noopener noreferrer"
+          style="display:inline-flex;align-items:center;justify-content:center;padding:6px 10px;border-radius:9999px;background:#eef2ff;color:#4338ca;text-decoration:none;font-weight:600"
+        >查看门票</a>
+      </div>
     </div>`
     const info = new AMap.InfoWindow({ content, offset: new AMap.Pixel(0, -32) })
     info.open(map, coord)
@@ -427,6 +465,11 @@ async function flyToDestination(city: string) {
   if (coord) { map.setZoom(13); map.setCenter(coord) }
 }
 
+async function resizeMap() {
+  await mapReadyPromise
+  map?.resize?.()
+}
+
 function toggleOptimize() {
   isOptimize.value = !isOptimize.value
   if (props.places.length > 1) renderPlaces(props.places)
@@ -444,5 +487,5 @@ async function planRoute() {
 watch(() => props.places, (p) => { if (p?.length) renderPlaces(p) }, { deep: true })
 watch(() => props.dayGroups, () => { if (props.places.length) renderPlaces(props.places) }, { deep: true })
 
-defineExpose({ flyToDestination })
+defineExpose({ flyToDestination, resizeMap })
 </script>
