@@ -101,9 +101,6 @@ export function useAgent() {
   /** AbortController 实例，用于取消 */
   let abortController: AbortController | null = null
 
-  /** 已累积的完整 messages（用于多轮续接，可选） */
-  const conversationHistory = ref<{ role: string; content: string }[]>([])
-
   // ==========================================================
   // SSE 事件处理器
   // ==========================================================
