@@ -1,5 +1,5 @@
 <template>
-  <div class="flex h-full flex-col overflow-hidden bg-white" ref="printRef">
+  <div class="flex h-full flex-col overflow-hidden bg-white">
     <!-- ============================================
          空状态：还没生成过
          ============================================ -->
@@ -105,6 +105,7 @@
 
       <!-- ── Markdown 渲染区 ── -->
       <div
+        ref="printRef"
         class="min-h-0 flex-1 overflow-y-auto bg-white p-8 prose prose-blue max-w-none"
       >
         <!-- 行程标题 -->

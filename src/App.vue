@@ -492,13 +492,13 @@ function prepareExportClone(source: HTMLElement): { wrapper: HTMLDivElement; clo
   wrapper.style.position = 'fixed'
   wrapper.style.left = '-100000px'
   wrapper.style.top = '0'
-  wrapper.style.width = '800px'
+  wrapper.style.width = '1200px'
   wrapper.style.background = '#ffffff'
   wrapper.style.zIndex = '-1'
   wrapper.style.pointerEvents = 'none'
 
   const clone = source.cloneNode(true) as HTMLElement
-  clone.style.width = '800px'
+  clone.style.width = '1200px'
   clone.style.height = 'auto'
   clone.style.maxHeight = 'none'
   clone.style.overflow = 'visible'
@@ -532,17 +532,18 @@ async function exportPDF() {
     exportWrapper = wrapper
     await nextTick()
     await new Promise((r) => requestAnimationFrame(r))
+    await new Promise((r) => setTimeout(r, 500))
 
     const canvas = await html2canvas(clone, {
-      scale: 1,
+      scale: 1.5,
       useCORS: true,
       backgroundColor: '#ffffff',
       scrollX: 0,
       scrollY: 0,
-      width: 800,
-      height: clone.scrollHeight,
-      windowWidth: 800,
-      windowHeight: clone.scrollHeight,
+      width: 1200,
+      height: clone.scrollHeight + 50,
+      windowWidth: 1200,
+      windowHeight: clone.scrollHeight + 50,
       logging: false,
     })
     wrapper.remove()
