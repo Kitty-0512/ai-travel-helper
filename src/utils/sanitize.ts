@@ -38,7 +38,7 @@ const ALLOWED_TAGS = [
 /**
  * 允许的 HTML 属性（白名单之外全部剥离）
  */
-const ALLOWED_ATTRS = [
+const ALLOWED_ATTR = [
   // 链接
   'href', 'title', 'target', 'rel',
   // 图片
@@ -77,8 +77,6 @@ export function sanitizeHtml(html: string): string {
     ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel):|[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$))/i,
     // <a> 标签强制加安全属性
     ADD_ATTR: ['target'],
-    // 只允许 http/https/mailto/tel 协议
-    ALLOWED_PROTOCOLS: ['http', 'https', 'mailto', 'tel'],
   })
 }
 
