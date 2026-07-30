@@ -11,7 +11,7 @@ COPY . .
 
 # 空 = 同源请求，部署后前端通过 FastAPI 直接访问 /api
 ARG VITE_API_BASE_URL=
-ARG VITE_API_SECRET_KEY=change-me-to-a-random-string
+ARG VITE_API_SECRET_KEY=kitty-travel
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 ENV VITE_API_SECRET_KEY=$VITE_API_SECRET_KEY
 
