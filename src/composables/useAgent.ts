@@ -328,8 +328,12 @@ function cleanJsonBlock(raw: string): string {
   // 移除 ```json ... ``` 代码块（完整或未闭合）
   cleaned = cleaned.replace(/```json[\s\S]*?```/g, '')
   cleaned = cleaned.replace(/```json[\s\S]*$/g, '')
-  // 移除 LLM 误输出的 <invoke>...</invoke> XML 块
-  cleaned = cleaned.replace(/<invoke\b[^>]*>[\s\S]*?<\/invoke>/g, '')
-  cleaned = cleaned.replace(/<invoke\b[\s\S]*$/g, '')
+  // 移除 LLM 误输出的 XML 工具调用块（完整或未闭合）
+  // 兼容各种格式：<invoke ...> <parameter ...>...</parameter> </invoke>
+  cleaned = cleaned.replace(/<\s*invoke\b[\s\S]*?<\s*\/\s*invoke\s*>/gi, '')
+  cleaned = cleaned.replace(/<\s*invoke\b[\s\S]*$/gi, '')
+  // 单独出现的 parameter / function_call 片段也清掉
+  cleaned = cleaned.replace(/<\s*parameter\b[^>]*>[\s\S]*?<\s*\/\s*parameter\s*>/gi, '')
+  cleaned = cleaned.replace(/<\s*\/?\s*(parameter|function_call|tool_call|invoke)\b[^>]*\/?\s*>/gi, '')
   return cleaned.trim()
 }
