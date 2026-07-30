@@ -72,7 +72,7 @@ export function sanitizeHtml(html: string): string {
 
   return DOMPurify.sanitize(html, {
     ALLOWED_TAGS,
-    ALLOWED_ATTRS,
+    ALLOWED_ATTR,
     // 禁止一切 <a href="javascript:..."> 这类伪协议
     ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel):|[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$))/i,
     // <a> 标签强制加安全属性

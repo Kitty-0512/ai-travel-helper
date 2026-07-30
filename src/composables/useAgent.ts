@@ -15,7 +15,7 @@
  *   reset()      → 清空所有状态
  */
 
-import { reactive, ref } from 'vue'
+import { reactive } from 'vue'
 import {
   generateItinerary,
   continueChat,
