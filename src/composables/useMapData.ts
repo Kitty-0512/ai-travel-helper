@@ -7,7 +7,7 @@
  * 输出：优化后的景点顺序、节省的公里数
  */
 
-import { ref, computed, type Ref, type ComputedRef } from 'vue'
+import { ref, computed, type Ref } from 'vue'
 import { optimizeRoute, calcTotalDistance } from '@/utils/tsp'
 import type { PlaceDetail } from '@/api/agent'
 
