@@ -2,9 +2,11 @@
 FROM node:20-alpine AS frontend-build
 
 WORKDIR /build
-RUN corepack enable
+
+# 安装 pnpm（比 corepack enable 更稳）
+RUN npm install -g pnpm
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --no-frozen-lockfile
 COPY . .
 
 # 空 = 同源请求，部署后前端通过 FastAPI 直接访问 /api
@@ -24,7 +26,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/backend
 
-# 安装依赖
+# 安装 Python 依赖
 COPY backend/requirements.txt ./requirements.txt
 COPY travel-mcp-server/requirements.txt /tmp/mcp-requirements.txt
 RUN pip install --no-cache-dir --upgrade pip \
