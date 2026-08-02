@@ -7,7 +7,9 @@
       v-if="!hasContent && !loading"
       class="flex-1 flex flex-col items-center justify-center text-gray-400 gap-3 p-8"
     >
-      <span class="text-5xl">🗺️</span>
+      <svg class="w-12 h-12 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+      </svg>
       <p class="text-base">在左侧填写目的地和天数，点击生成行程</p>
     </div>
 
@@ -26,10 +28,9 @@
             v-if="loading"
             class="inline-block h-4 w-4 rounded-full border-2 border-blue-500 border-t-transparent animate-spin"
           ></span>
-          <span v-else-if="error" class="text-lg">⚠️</span>
           <div class="min-w-0">
             <div class="text-[11px] uppercase tracking-[0.18em]" :class="error ? 'text-red-500' : 'text-blue-500'">
-              {{ error ? 'Agent Error' : 'Current Action' }}
+              {{ error ? '生成失败' : '执行状态' }}
             </div>
             <div class="truncate text-sm font-medium" :class="error ? 'text-red-700' : 'text-blue-700'">
               {{ error ? error.message || error.code : statusText }}
@@ -54,7 +55,7 @@
           <span class="transform transition-transform duration-200" :class="toolsExpanded ? 'rotate-90' : ''">
             ▶
           </span>
-          <span>🔧 已调用 {{ toolCalls.length }} 个工具</span>
+          <span>工具调用 ({{ toolCalls.length }})</span>
           <span v-if="!toolsExpanded" class="text-slate-400">
             （点击展开）
           </span>
@@ -72,8 +73,8 @@
                 ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
                 : 'bg-blue-50 text-blue-700 ring-blue-200'"
           >
-            <span class="shrink-0 mt-0.5">
-              {{ tc.status === 'success' ? '✅' : tc.status === 'error' ? '❌' : '⏳' }}
+            <span class="shrink-0 mt-0.5 text-[10px] font-bold uppercase tracking-wider">
+              {{ tc.status === 'success' ? 'OK' : tc.status === 'error' ? 'ERR' : '…' }}
             </span>
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2 font-medium">
@@ -113,7 +114,7 @@
           v-if="destination && days && cleanMarkdown"
           class="mb-6 text-2xl font-bold text-slate-800"
         >
-          📅 {{ destination }} {{ days }} 天行程
+          {{ destination }} · {{ days }} 天行程
         </h2>
 
         <!-- Markdown 内容（有内容就显示） -->
@@ -128,7 +129,7 @@
           v-else-if="loading"
           class="flex flex-1 items-center justify-center text-slate-400"
         >
-          <span class="animate-pulse">⏳ 等待 AI 响应...</span>
+          <span class="animate-pulse">正在生成方案...</span>
         </div>
       </div>
 
@@ -141,7 +142,7 @@
           <input
             v-model="chatInput"
             type="text"
-            placeholder="对行程不满意？告诉我你想怎么改…（如：第三天太赶了、多加点博物馆）"
+            placeholder="输入修改建议，例如：减少第三天的景点、增加美食推荐"
             class="flex-1 border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             :disabled="chatLoading"
             @keydown.enter="handleContinue"
@@ -151,10 +152,10 @@
             :disabled="!chatInput.trim() || chatLoading"
             class="bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed text-white rounded-lg px-4 py-2 text-sm font-medium transition-colors shrink-0"
           >
-            {{ chatLoading ? '⏳' : '📨 发送' }}
+            {{ chatLoading ? '...' : '发送' }}
           </button>
         </div>
-        <p class="mt-1.5 text-xs text-slate-400">💡 试试："第二天太累了，减少一个景点" 或 "推荐一些美食"</p>
+        <p class="mt-1.5 text-xs text-slate-400">例如："减少第二天的景点"、"增加美食推荐"、"调整第三天路线"</p>
       </div>
 
     </div>
@@ -271,12 +272,12 @@ function formatToolName(name: string): string {
 /** 格式化工具参数（简短摘要） */
 function formatArgs(args: Record<string, unknown>): string {
   const parts: string[] = []
-  if (args.city) parts.push(`📍 ${args.city}`)
-  if (args.location) parts.push(`📍 ${args.location}`)
+  if (args.city) parts.push(`${args.city}`)
+  if (args.location) parts.push(`${args.location}`)
   if (args.keyword) parts.push(`关键词: ${args.keyword}`)
   if (args.category) parts.push(`类别: ${args.category}`)
-  if (args.start && args.end) parts.push(`🚗 ${args.start} → ${args.end}`)
-  if (args.origin && args.destination) parts.push(`🚗 ${args.origin} → ${args.destination}`)
+  if (args.start && args.end) parts.push(`${args.start} → ${args.end}`)
+  if (args.origin && args.destination) parts.push(`${args.origin} → ${args.destination}`)
   if (args.budget) parts.push(`预算: ${args.budget}`)
   return parts.length > 0 ? parts.join(' / ') : JSON.stringify(args).slice(0, 80)
 }

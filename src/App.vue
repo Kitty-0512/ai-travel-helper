@@ -4,15 +4,19 @@
     <!-- ==========================================
          Header（保持原样）
          ========================================== -->
-    <header class="bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-6 py-4 flex items-center gap-3 shadow-sm shrink-0">
+    <header class="bg-white border-b border-gray-200 text-gray-900 px-6 py-3.5 flex items-center gap-3 shrink-0">
       <button
         @click="sidebarOpen = !sidebarOpen"
-        class="md:hidden text-3xl focus:outline-none"
+        class="md:hidden text-xl focus:outline-none text-gray-600"
       >
-        ☰
+        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
       </button>
-      <span class="text-3xl">✈️</span>
-      <h1 class="text-2xl font-bold tracking-tight">AI 旅行助手</h1>
+      <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+      </svg>
+      <h1 class="text-xl font-bold tracking-tight">Travel Planner</h1>
     </header>
 
     <div class="flex flex-1 overflow-hidden relative">
@@ -72,7 +76,7 @@
 
         <!-- 每日行程卡片（数据来自 useItinerary） -->
         <div v-if="itineraryData.days.length > 0">
-          <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">每日行程</h2>
+          <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">行程详情</h2>
           <div class="flex flex-col gap-3">
             <div
               v-for="d in itineraryData.days"
@@ -87,15 +91,15 @@
               </div>
               <div class="px-3 py-2 flex flex-col gap-1 text-xs text-gray-700">
                 <div v-if="d.morning" class="flex gap-1">
-                  <span class="text-yellow-500 shrink-0">🌅</span>
+                  <span class="text-gray-400 shrink-0 font-medium">上午</span>
                   <span>{{ d.morning }}</span>
                 </div>
                 <div v-if="d.afternoon" class="flex gap-1">
-                  <span class="text-orange-400 shrink-0">☀️</span>
+                  <span class="text-gray-400 shrink-0 font-medium">下午</span>
                   <span>{{ d.afternoon }}</span>
                 </div>
                 <div v-if="d.evening" class="flex gap-1">
-                  <span class="text-indigo-400 shrink-0">🌙</span>
+                  <span class="text-gray-400 shrink-0 font-medium">晚上</span>
                   <span>{{ d.evening }}</span>
                 </div>
               </div>
@@ -110,7 +114,6 @@
             v-if="mapData.optimization.value.hasOptimized"
             class="rounded-lg bg-green-50 border border-green-200 px-3 py-2 text-xs text-green-700 flex items-center gap-1.5"
           >
-            <span>✅</span>
             <span>路径已优化，节省约 <b>{{ mapData.optimization.value.savedKm }} 公里</b></span>
           </div>
           <div
@@ -179,7 +182,7 @@
             :disabled="agent.state.loading || !destination || !days"
             class="bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed text-white rounded-lg py-3 text-sm font-medium transition-colors"
           >
-            {{ agent.state.loading ? '⏳ 生成中...' : '🪄 生成行程' }}
+            {{ agent.state.loading ? '生成中...' : '生成行程' }}
           </button>
 
           <button
@@ -187,7 +190,7 @@
             :disabled="!agent.state.cleanMarkdown"
             class="bg-emerald-500 hover:bg-emerald-600 disabled:bg-gray-300 disabled:cursor-not-allowed text-white rounded-lg py-3 text-sm font-medium transition-colors"
           >
-            📄 导出 PDF
+            导出 PDF
           </button>
         </div>
       </aside>

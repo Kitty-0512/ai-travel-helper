@@ -126,7 +126,7 @@ export function useAgent() {
           startTime: Date.now(),
         }
         state.toolCalls.push(record)
-        state.statusText = payload.message || `🔧 正在调用 ${payload.tool}...`
+        state.statusText = payload.message || `正在调用 ${payload.tool}...`
         break
       }
 
@@ -144,8 +144,8 @@ export function useAgent() {
           record.status = payload.status
         }
         state.statusText = payload.message || (payload.status === 'error'
-          ? `❌ ${payload.tool} 失败`
-          : `✅ ${payload.tool} 完成`)
+          ? `${payload.tool} 失败`
+          : `${payload.tool} 完成`)
         break
       }
 
@@ -161,7 +161,7 @@ export function useAgent() {
       // ── 结构化行程 JSON ──
       case 'itinerary_json': {
         state.itinerary = event.data as ItineraryPayload
-        state.statusText = '📋 行程数据已生成'
+        state.statusText = '行程数据已生成'
         break
       }
 
@@ -172,7 +172,7 @@ export function useAgent() {
         state.sessionId = payload.session_id || ''
         state.requestId = payload.request_id || ''
         state.loading = false
-        state.statusText = '✅ 行程生成完成'
+        state.statusText = '行程生成完成'
         break
       }
 
@@ -182,9 +182,9 @@ export function useAgent() {
         state.error = payload
         state.loading = false
         if (payload.code === 'STREAM_INTERRUPTED' || payload.code === 'STREAM_ERROR') {
-          state.statusText = '⚠️ 连接中断，可重新点击生成'
+          state.statusText = '连接中断，可重新点击生成'
         } else {
-          state.statusText = '❌ 生成失败'
+          state.statusText = '生成失败'
         }
         break
       }
@@ -202,7 +202,7 @@ export function useAgent() {
     // 重置状态
     Object.assign(state, createInitialState())
     state.loading = true
-    state.statusText = '🚀 正在启动 AI 旅行规划师...'
+    state.statusText = '正在启动旅行规划...'
 
     abortController = new AbortController()
 
@@ -231,7 +231,7 @@ export function useAgent() {
     }
 
     state.loading = true
-    state.statusText = '🔄 正在根据你的意见修改行程...'
+    state.statusText = '正在根据你的意见修改行程...'
     state.error = null
 
     abortController = new AbortController()
@@ -290,7 +290,7 @@ export function useAgent() {
       abortController = null
     }
     state.loading = false
-    state.statusText = '⏹️ 已取消'
+    state.statusText = '已取消'
   }
 
   /**
@@ -320,25 +320,40 @@ export function useAgent() {
 // ============================================================
 
 /**
- * 实时去除 Markdown 文本中的 ```json ... ``` 代码块以及 LLM 误输出的 invoke XML。
- * 在流式输出过程中 JSON / XML 可能还不完整，正则兜底。
+ * 实时去除 Markdown 中的 ```json/```xml 代码块以及 LLM 误输出的 tool_calls XML。
+ * 策略：先整块删 + 再逐行删 + 最后兜底截断，不做内容保留以避免 XML 残留文本混入正文。
  */
 function cleanJsonBlock(raw: string): string {
   let cleaned = raw
-  // 移除 ```json ... ``` 代码块
-  cleaned = cleaned.replace(/```json[\s\S]*?```/g, '')
-  cleaned = cleaned.replace(/```json[\s\S]*$/g, '')
-  // 反复剥离 XML 标签（处理嵌套 invoke / parameter / function_call 等），
-  // 保留内部文本内容，直到不再变化
-  const tagRe = /<([a-zA-Z_][a-zA-Z0-9_.-]*)(?:\s[^>]*)?>([\s\S]*?)<\/\1>/g
-  for (let i = 0; i < 10; i++) {
+
+  // 1. 移除 ```json / ```xml 代码块
+  cleaned = cleaned.replace(/```(?:json|xml)[\s\S]*?```/g, '')
+  cleaned = cleaned.replace(/```(?:json|xml)[\s\S]*$/g, '')
+
+  // 2. 整块删除 XML 块（重复直到稳定，处理嵌套）
+  const blockTags = ['tool_calls', 'function_calls', 'invoke', 'parameter']
+  for (let i = 0; i < 20; i++) {
     const prev = cleaned
-    cleaned = cleaned.replace(tagRe, '$2')
+    for (const tag of blockTags) {
+      cleaned = cleaned.replace(new RegExp(`<${tag}[^>]*>[\\s\\S]*?<\\/${tag}>`, 'g'), '')
+    }
+    // 也处理自闭合
+    cleaned = cleaned.replace(/<[a-zA-Z_][\w.-]*(?:\s[^>]*)?\s*\/>/g, '')
     if (cleaned === prev) break
   }
-  // 自闭合标签 <xxx/>
-  cleaned = cleaned.replace(/<[a-zA-Z_][a-zA-Z0-9_.-]*(?:\s[^>]*)?\s*\/>/g, '')
-  // 未闭合残留
-  cleaned = cleaned.replace(/<[a-zA-Z_][a-zA-Z0-9_.-]*(?:\s[^>]*)?>[\s\S]*$/g, '')
+
+  // 3. 逐行过滤：流式输出中若某行以 XML 标签开头，整行丢弃
+  cleaned = cleaned
+    .split('\n')
+    .filter((line) => !/^\s*<\/?(?:tool_calls|function_calls|invoke|parameter)\b/.test(line))
+    .join('\n')
+
+  // 4. 兜底：从首个残留 XML 标签截断到末尾（流式未闭合场景）
+  cleaned = cleaned.replace(/<(tool_calls|function_calls|invoke|parameter)\b[^>]*>[\s\S]*$/g, '')
+  // 其他泛用标签同样截断
+  cleaned = cleaned.replace(/<[a-zA-Z_][\w.-]*(?:\s[^>]*)?>[\s\S]*$/g, '')
+
+  // 5. 清理多余空行
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n')
   return cleaned.trim()
 }

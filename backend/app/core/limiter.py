@@ -57,21 +57,25 @@ class SimpleRateLimiter:
         redis_client = await self._get_redis()
 
         if redis_client is not None:
-            key = f"rl:{self.scope}:{ip}"
-            current = await redis_client.incr(key)
-            if current == 1:
-                await redis_client.expire(key, self.window)
-            ttl = await redis_client.ttl(key)
-            remaining = max(self.max_calls - current, 0)
-            response.headers["X-RateLimit-Limit"] = str(self.max_calls)
-            response.headers["X-RateLimit-Remaining"] = str(remaining)
-            response.headers["X-RateLimit-Reset"] = str(max(ttl, 0))
-            if current > self.max_calls:
-                raise HTTPException(
-                    status_code=429,
-                    detail={"type": "error", "code": "RATE_LIMITED", "message": "request too frequent, try again later"},
-                )
-            return
+            try:
+                key = f"rl:{self.scope}:{ip}"
+                current = await redis_client.incr(key)
+                if current == 1:
+                    await redis_client.expire(key, self.window)
+                ttl = await redis_client.ttl(key)
+                remaining = max(self.max_calls - current, 0)
+                response.headers["X-RateLimit-Limit"] = str(self.max_calls)
+                response.headers["X-RateLimit-Remaining"] = str(remaining)
+                response.headers["X-RateLimit-Reset"] = str(max(ttl, 0))
+                if current > self.max_calls:
+                    raise HTTPException(
+                        status_code=429,
+                        detail={"type": "error", "code": "RATE_LIMITED", "message": "request too frequent, try again later"},
+                    )
+                return
+            except Exception as exc:
+                logger.warning("[RateLimit] redis op failed, fallback to memory: %s", exc)
+                self._redis = None
 
         self._store[ip] = [t for t in self._store[ip] if now - t < self.window]
         remaining = max(self.max_calls - len(self._store[ip]) - 1, 0)

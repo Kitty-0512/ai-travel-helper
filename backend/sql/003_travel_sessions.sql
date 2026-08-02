@@ -1,7 +1,7 @@
 -- Session persistence: save past trip planning conversations
 CREATE TABLE IF NOT EXISTS travel_sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    session_id VARCHAR(32) NOT NULL,
+    session_id VARCHAR(32) NOT NULL UNIQUE,
     user_id VARCHAR(64) NOT NULL,
     destination VARCHAR(50) NOT NULL,
     days INT NOT NULL DEFAULT 1,

@@ -251,11 +251,12 @@ class SessionRepository:
         try:
             async with self._pool.acquire() as conn:  # type: ignore[union-attr]
                 result = await conn.execute(
-                    "UPDATE travel_sessions SET is_active = FALSE WHERE session_id = $1",
+                    "UPDATE travel_sessions SET is_active = FALSE WHERE session_id = $1 AND user_id = $2",
                     session_id,
+                    user_id,
                 )
                 # asyncpg returns a command tag like "UPDATE 1"
-                return "UPDATE 1" in result
+                return result == "UPDATE 1"
         except Exception:
             logger.exception(
                 "[SessionRepo] delete failed session=%s user=%s", session_id, user_id

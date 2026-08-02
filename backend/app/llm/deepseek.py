@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import AsyncGenerator
 
@@ -14,6 +15,27 @@ from app.core.config import settings
 from app.core.exceptions import LLMAPIError, LLMTimeoutError
 
 logger = logging.getLogger(__name__)
+
+# DSML 标签模式：DeepSeek 偶尔在 content 中输出 tool_calls 文本而非使用标准 tool_calls delta
+_DSML_TAG_RE = re.compile(
+    r'</?(?:tool_calls|function_calls|invoke|parameter)\b[^>]*>',
+    re.IGNORECASE,
+)
+# 检测 content 中是否包含 DSML（用于日志和调试）
+_DSML_DETECT_RE = re.compile(
+    r'<(?:tool_calls|function_calls|invoke)\b',
+    re.IGNORECASE,
+)
+
+
+def _strip_dsml(text: str) -> str:
+    """从流式文本中移除 DSML 标签，返回干净文本。"""
+    return _DSML_TAG_RE.sub('', text)
+
+
+def _has_dsml(text: str) -> bool:
+    """检测文本中是否包含 DSML 工具调用标签。"""
+    return bool(_DSML_DETECT_RE.search(text))
 
 
 @dataclass
@@ -110,7 +132,15 @@ async def chat_completion_stream(
                         content = delta.get("content", "")
                         if content:
                             result.content += content
-                            yield content
+                            # 过滤 DSML 工具调用标签，禁止内部协议泄漏到前端
+                            clean = _strip_dsml(content)
+                            if _has_dsml(content):
+                                logger.info(
+                                    "[LLM] DSML stripped from chunk: %s",
+                                    content[:120].replace('\n', '\\n'),
+                                )
+                            if clean.strip():
+                                yield clean
 
                         for tc in delta.get("tool_calls", []):
                             idx = tc.get("index", 0)

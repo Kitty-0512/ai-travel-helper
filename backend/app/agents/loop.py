@@ -101,6 +101,17 @@ async def run_agent(
     try:
         async for event in generator:
             yield event
+    except GeneratorExit:
+        return
+    except BaseException as e:
+        # 兜底：捕获所有从子生成器逃逸的未处理异常，
+        # 转成 error SSE 事件后关流，避免前端看到"连接意外中断"。
+        logger.exception("[Agent] unhandled exception escaped generator: %s", e)
+        with suppress(BaseException):
+            yield _emit("error", {
+                "code": "STREAM_ERROR",
+                "message": f"生成过程异常（{type(e).__name__}），请重试",
+            })
     finally:
         if has_trace_context():
             await trace_manager.finish_trace(
@@ -136,10 +147,10 @@ async def _run_planner_executor(
     )
 
     if memory_text:
-        yield _emit("agent_think", f"🧠 已加载用户长期偏好：{memory_text}")
+        yield _emit("agent_think", f"已加载用户长期偏好：{memory_text}")
 
     # ── 1. Planner：生成显式执行计划 ──
-    yield _emit("agent_think", "🧭 正在制定旅行规划方案...")
+    yield _emit("agent_think", "正在制定旅行规划方案...")
     try:
         state.plan = await asyncio.wait_for(create_plan(state), timeout=settings.planner_timeout)
     except asyncio.TimeoutError:
@@ -163,7 +174,7 @@ async def _run_planner_executor(
     plan_lines = "\n".join(f"{i + 1}. {t.task}" for i, t in enumerate(state.plan.tasks))
     yield _emit(
         "agent_think",
-        f"📋 已生成执行计划（共 {len(state.plan.tasks)} 项任务）：\n{plan_lines}",
+        f"已生成执行计划（共{len(state.plan.tasks)} 项任务）：\n{plan_lines}",
     )
 
     # ── 2. Executor：按计划执行工具调用 ──
@@ -173,7 +184,7 @@ async def _run_planner_executor(
     _SENTINEL = object()
 
     async def on_task_start(task, tool_name, args):
-        await queue.put(("agent_think", f"🔧 正在执行任务：{task.task}"))
+        await queue.put(("agent_think", f"正在执行任务：{task.task}"))
         await queue.put(("tool_call", {
             "type": "tool_call",
             "tool": tool_name,
@@ -197,22 +208,37 @@ async def _run_planner_executor(
     async def _drive_executor():
         try:
             await execute_plan(state, on_task_start, on_task_result)
+        except BaseException as e:
+            logger.exception("[Executor] _drive_executor raised: %s (type=%s)", e, type(e).__name__)
+            raise
         finally:
             await queue.put(_SENTINEL)
 
     exec_task = asyncio.create_task(_drive_executor())
-    while True:
-        item = await queue.get()
-        if item is _SENTINEL:
-            break
-        ev_type, data = item
-        yield _emit(ev_type, data)
     try:
+        while True:
+            item = await queue.get()
+            if item is _SENTINEL:
+                break
+            ev_type, data = item
+            yield _emit(ev_type, data)
+        # 等待 task 完成，传播内部异常（如有）
         await asyncio.wait_for(exec_task, timeout=settings.executor_timeout)
+        # 额外检查：task 是否以异常结束但未被 await 探测到
+        if exec_task.done() and not exec_task.cancelled():
+            exc = exec_task.exception()
+            if exc is not None:
+                logger.exception("[Executor] task completed with unhandled exception: %s", exc)
+                yield await _emit_error_with_trace(
+                    _emit, "EXECUTOR_ERROR",
+                    f"工具执行异常（{type(exc).__name__}）：{exc}",
+                )
+                return
     except asyncio.TimeoutError:
-        exec_task.cancel()
-        with suppress(Exception):
-            await exec_task
+        if not exec_task.done():
+            exec_task.cancel()
+            with suppress(Exception):
+                await exec_task
         yield await _emit_error_with_trace(
             _emit,
             "EXECUTOR_TIMEOUT",
@@ -220,17 +246,34 @@ async def _run_planner_executor(
         )
         return
     except Exception as e:
+        logger.exception("[Executor] unhandled exception in queue loop: %s", e)
+        if not exec_task.done():
+            exec_task.cancel()
+            with suppress(Exception):
+                await exec_task
         yield await _emit_error_with_trace(_emit, "EXECUTOR_ERROR", str(e))
+        return
+    except BaseException as e:
+        logger.exception("[Executor] base exception in queue loop: %s (type=%s)", e, type(e).__name__)
+        if not exec_task.done():
+            exec_task.cancel()
+            with suppress(Exception):
+                await exec_task
+        with suppress(BaseException):
+            yield await _emit_error_with_trace(
+                _emit, "EXECUTOR_CANCELLED", f"生成过程被中断（{type(e).__name__}），请重试"
+            )
         return
 
     # ── 3. Finalize：基于 Executor 收集到的真实数据，流式撰写最终行程 ──
-    yield _emit("agent_think", "✍️ 正在撰写行程文案...")
+    yield _emit("agent_think", "正在撰写行程文案...")
 
     messages: list[dict] = [
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
         {"role": "user", "content": state.user_input},
     ]
-    messages.extend(state.messages)  # Executor 产生的 assistant/tool 消息
+    # 将 Executor 的 tool_call 消息转为纯文本摘要，避免 LLM 在 Finalize 时输出 tool_calls XML
+    messages.extend(_simplify_messages_for_finalize(state.messages))
 
     try:
         llm_response = None
@@ -251,6 +294,12 @@ async def _run_planner_executor(
         return
     except Exception as e:
         yield await _emit_error_with_trace(_emit, "LLM_API_ERROR", str(e))
+        return
+    except BaseException as e:
+        try:
+            yield await _emit_error_with_trace(_emit, "LLM_CANCELLED", f"LLM 调用被中断（{type(e).__name__}）")
+        except Exception:
+            pass
         return
 
     if llm_response.content and llm_response.content.strip():
@@ -290,7 +339,7 @@ async def _run_chat_continuation(
     """ReAct：Think → Act → Observe → Loop，在已有上下文上继续对话。"""
     messages = previous_messages.copy()
     if memory_text:
-        yield _emit("agent_think", f"🧠 已加载用户长期偏好：{memory_text}")
+        yield _emit("agent_think", f"已加载用户长期偏好：{memory_text}")
         # Inject once near the top if not already present
         if not any(
             isinstance(m.get("content"), str) and "【用户长期偏好】" in m.get("content", "")
@@ -308,7 +357,7 @@ async def _run_chat_continuation(
 
     while step_count < settings.agent_max_steps:
         step_count += 1
-        yield _emit("agent_think", f"🔍 第 {step_count} 步：正在思考...")
+        yield _emit("agent_think", f"第 {step_count} 步：正在分析...")
 
         try:
             llm_response = None
@@ -335,6 +384,12 @@ async def _run_chat_continuation(
         except Exception as e:
             yield await _emit_error_with_trace(_emit, "LLM_API_ERROR", str(e))
             return
+        except BaseException as e:
+            try:
+                yield await _emit_error_with_trace(_emit, "LLM_CANCELLED", f"LLM 调用被中断（{type(e).__name__}）")
+            except Exception:
+                pass
+            return
 
         if llm_response.content and llm_response.content.strip():
             messages.append({"role": "assistant", "content": llm_response.content})
@@ -355,7 +410,14 @@ async def _run_chat_continuation(
                     "args": args,
                 })
 
-            tool_results = await execute_tool_calls(llm_response.tool_calls)
+            try:
+                tool_results = await execute_tool_calls(llm_response.tool_calls)
+            except BaseException as e:
+                try:
+                    yield await _emit_error_with_trace(_emit, "TOOL_ERROR", f"工具调用失败（{type(e).__name__}）：{e}")
+                except Exception:
+                    pass
+                return
             for tr in tool_results:
                 yield _emit("tool_result", {
                     "tool": tr["tool_name"],
@@ -404,7 +466,7 @@ async def _finalize(
     extract_text: str = "",
     extract_styles: list[str] | None = None,
 ) -> AsyncGenerator[SSEEvent, None]:
-    yield _emit("agent_think", "📋 正在整理最终行程数据...")
+    yield _emit("agent_think", "正在整理最终行程数据...")
     await trace_manager.record_step(
         action="finalize_start",
         input_payload={"message_count": len(messages), "destination": destination, "days": days},
@@ -580,6 +642,78 @@ async def _extract_itinerary_json(
         return previous if previous else {"days": [], "allPlaces": []}
 
 
+def _simplify_messages_for_finalize(messages: list[dict]) -> list[dict]:
+    """将 Executor 产生的 tool_call 消息转成纯文本，避免 LLM 在 Finalize 阶段输出 tool_calls XML。"""
+    simplified: list[dict] = []
+    for msg in messages:
+        role = msg.get("role", "")
+        if role == "assistant" and msg.get("tool_calls"):
+            # Convert OpenAI tool_call assistant message to plain text
+            tool_names = []
+            for tc in msg.get("tool_calls", []):
+                fn = tc.get("function", {})
+                name = fn.get("name", "unknown")
+                try:
+                    args = json.loads(fn.get("arguments", "{}"))
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+                tool_names.append(_summarize_tool_call(name, args))
+            simplified.append({
+                "role": "assistant",
+                "content": "已执行工具调用：" + "；".join(tool_names),
+            })
+        elif role == "tool":
+            # Convert tool result message to plain text summary
+            try:
+                result = json.loads(msg.get("content", "{}")) if isinstance(msg.get("content"), str) else msg.get("content", {})
+            except json.JSONDecodeError:
+                result = {}
+            simplified.append({
+                "role": "assistant",
+                "content": _summarize_tool_result(result),
+            })
+        else:
+            simplified.append(msg)
+    return simplified
+
+
+def _summarize_tool_call(name: str, args: dict) -> str:
+    city = args.get("city") or args.get("location") or ""
+    keyword = args.get("keyword") or ""
+    category = args.get("category") or ""
+    mapping = {
+        "get_weather": f"查询{city}天气" if city else "查询天气",
+        "search_place": f"搜索{city}{keyword or category or '景点'}" if city else f"搜索{keyword or category or '景点'}",
+        "calculate_route": f"规划{args.get('start', '')}到{args.get('end', '')}路线" if args.get("start") else "规划路线",
+        "search_flights": f"搜索飞往{city}机票" if city else "搜索机票",
+        "search_hotels": f"搜索{city}酒店" if city else "搜索酒店",
+    }
+    return mapping.get(name, f"调用 {name}")
+
+
+def _summarize_tool_result(result: dict) -> str:
+    if not isinstance(result, dict):
+        return "工具执行完成"
+    if result.get("error"):
+        return f"工具执行出错：{result['error']}"
+    if result.get("pois_total"):
+        return f"搜索到 {result['pois_total']} 个景点"
+    if result.get("forecasts"):
+        return f"获取到 {len(result['forecasts'])} 天天气预报"
+    if result.get("distance_text"):
+        return f"路线距离 {result['distance_text']}，约 {result.get('duration_text', '')}"
+    if result.get("flights"):
+        return f"找到 {len(result['flights'])} 个航班"
+    if result.get("hotels"):
+        return f"找到 {len(result['hotels'])} 家酒店"
+    if result.get("pois"):
+        names = [p.get("name", "") for p in result["pois"][:5] if p.get("name")]
+        if names:
+            return f"搜索到景点：{'、'.join(names)}"
+        return f"搜索到 {len(result['pois'])} 个结果"
+    return "工具执行完成"
+
+
 def _truncate_result(result: dict, max_keys: int = 3) -> dict:
     """预览截断工具结果，避免 SSE 中传输过大数据"""
     if not isinstance(result, dict):
@@ -611,6 +745,9 @@ async def _stream_llm_with_timeout(
         try:
             async for item in chat_completion_stream(messages=messages, tools=tools):
                 await queue.put(item)
+        except BaseException as exc:
+            # 将异常封装后传入队列，让消费者能感知到 LLM 调用失败的原因
+            await queue.put(exc)
         finally:
             await queue.put(done)
 
@@ -624,6 +761,9 @@ async def _stream_llm_with_timeout(
             item = await asyncio.wait_for(queue.get(), timeout=remaining)
             if item is done:
                 break
+            if isinstance(item, BaseException):
+                # _pump 将 LLM 异常传入队列，在此重新抛出
+                raise item
             yield item
     finally:
         if not pump_task.done():

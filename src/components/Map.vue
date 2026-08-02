@@ -33,7 +33,7 @@
             isOptimize ? 'translate-x-4' : 'translate-x-0.5'
           ]"></div>
         </div>
-        <span class="text-xs text-gray-600">🧠 最短路径</span>
+        <span class="text-xs text-gray-600">最短路径</span>
       </label>
 
       <!-- 优化结果 -->
@@ -47,7 +47,7 @@
         :disabled="routeLoading"
         class="ml-auto px-3 py-1 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 text-white text-xs rounded-full transition-colors"
       >
-        {{ routeLoading ? '规划中...' : '🔄 重新规划' }}
+        {{ routeLoading ? '规划中...' : '重新规划' }}
       </button>
     </div>
 
@@ -97,10 +97,10 @@ const dayColors = ref<string[]>([])
 const DAY_COLORS = ["#3b82f6", "#ef4444", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899"]
 
 const routeModes = [
-  { label: "🚗 驾车", value: "driving" },
-  { label: "🚶 步行", value: "walking" },
-  { label: "🚴 骑行", value: "riding" },
-  { label: "📏 直线", value: "straight" },
+  { label: "驾车", value: "driving" },
+  { label: "步行", value: "walking" },
+  { label: "骑行", value: "riding" },
+  { label: "直线", value: "straight" },
 ]
 
 let mapReadyResolve!: () => void
@@ -283,10 +283,10 @@ function addMarker(
     const ticketUrl = buildTicketUrl(name)
     const content = `<div style="padding:12px 14px;min-width:220px;font-size:13px;line-height:1.9">
       <div style="font-weight:600;font-size:14px;margin-bottom:4px;color:#1f2937">${label}. ${safeName}</div>
-      ${safeAddress ? `<div style="color:#6b7280">📍 ${safeAddress}</div>` : ""}
-      <div style="color:#6b7280">🧭 坐标：<a href="${navUrl}" target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:none">${coord[0].toFixed(6)}, ${coord[1].toFixed(6)}</a></div>
-      ${safeTel ? `<div style="color:#6b7280">📞 ${safeTel}</div>` : ""}
-      ${safeType ? `<div style="color:#6b7280">🏷️ ${safeType}</div>` : ""}
+      ${safeAddress ? `<div style="color:#6b7280">${safeAddress}</div>` : ""}
+      <div style="color:#6b7280">坐标：<a href="${navUrl}" target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:none">${coord[0].toFixed(6)}, ${coord[1].toFixed(6)}</a></div>
+      ${safeTel ? `<div style="color:#6b7280">${safeTel}</div>` : ""}
+      ${safeType ? `<div style="color:#6b7280">${safeType}</div>` : ""}
       <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
         <a
           href="${navUrl}"
