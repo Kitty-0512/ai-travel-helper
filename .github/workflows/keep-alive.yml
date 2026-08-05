@@ -12,5 +12,16 @@ jobs:
     steps:
       - name: Ping health check
         run: |
-          curl -sf https://ai-travel-helper.onrender.com/api/health/live
-          echo "Ping done"
+          set -e
+          URL="https://ai-travel-helper.onrender.com/api/health/live"
+          for i in 1 2 3; do
+            if curl -sf --max-time 30 "$URL"; then
+              echo ""
+              echo "Ping ok (attempt $i)"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying..."
+            sleep 5
+          done
+          echo "All ping attempts failed"
+          exit 1

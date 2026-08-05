@@ -4,6 +4,13 @@
 .env.*.local
 backend/.env
 
+# API Keys / 本地笔记（严禁提交）
+api.txt
+*.key
+
+# 个人简历（不入仓）
+*.docx
+
 # Logs
 logs
 *.log
