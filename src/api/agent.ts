@@ -22,11 +22,14 @@ type SSEEventType =
   | 'done'           // 全部完成
   | 'error'          // 异常中断
 
-/** 景点坐标详情 */
+/** 景点坐标详情（tel/address 来自高德 POI，可能为空） */
 export interface PlaceDetail {
   name: string
   lng: number
   lat: number
+  address?: string
+  tel?: string
+  category?: string
 }
 
 /** 每日行程 */

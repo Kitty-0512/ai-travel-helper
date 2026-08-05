@@ -187,7 +187,7 @@
 
           <button
             @click="exportPDF"
-            :disabled="!agent.state.cleanMarkdown"
+            :disabled="!agent.state.cleanMarkdown && !itineraryData.days.length"
             class="bg-emerald-500 hover:bg-emerald-600 disabled:bg-gray-300 disabled:cursor-not-allowed text-white rounded-lg py-3 text-sm font-medium transition-colors"
           >
             导出 PDF
@@ -283,6 +283,8 @@ import { useItinerary } from './composables/useItinerary'
 import { useMapData } from './composables/useMapData'
 import html2canvas from 'html2canvas-pro'
 import jsPDF from 'jspdf'
+import { marked } from 'marked'
+import { sanitizeHtml } from '@/utils/sanitize'
 import type { DonePayload } from './api/agent'
 import { listSessions, getSession, deleteSession, type SessionSummary } from './api/sessions'
 
@@ -347,6 +349,12 @@ async function loadHistory(session: SessionSummary) {
       placesDetail: detail.places_detail,
       markdownText: detail.markdown_text,
     })
+
+    await nextTick()
+    mapRef.value?.lockCity?.(detail.destination)
+    if (detail.places_detail?.length) {
+      mapRef.value?.seedCoords?.(detail.places_detail, detail.destination)
+    }
   } catch (err) {
     console.error('加载历史会话失败:', err)
   }
@@ -383,7 +391,7 @@ const workspaceBodyRef = ref<HTMLElement | null>(null)
 
 // 手机侧边栏
 const sidebarOpen = ref(false)
-const topPaneHeight = ref(430)
+const topPaneHeight = ref(360)
 const isResizing = ref(false)
 let activePointerId: number | null = null
 
@@ -442,6 +450,9 @@ function handleGenerate() {
   if (!destination.value || !days.value || days.value < 1) return
   sidebarOpen.value = false  // 手机友好：生成后自动收起
 
+  // 立即锁定地图搜索城市，避免 itinerary_json 先到、PlaceSearch city 为空
+  mapRef.value?.lockCity?.(destination.value)
+
   agent.startGenerate({
     destination: destination.value,
     days: days.value,
@@ -462,6 +473,8 @@ watch(
     // 如果后端返回了 coordinates（places_detail），直接用
     if (done.places_detail && done.places_detail.length >= 2) {
       mapData.setPlacesData(done.places_detail)
+      // 预填坐标 + 用 done.destination 锁定城市，避免 PlaceSearch city 为空
+      mapRef.value?.seedCoords?.(done.places_detail, done.destination || destination.value)
     }
     // 否则回退到 Map 组件的 geocode 方法（兼容旧逻辑）
     else if (places.value.length >= 2) {
@@ -485,106 +498,412 @@ watch(
 const { places, dayGroups, itineraryData } = itinerary
 
 // ==========================================================
-// 7. PDF 导出（保持原逻辑，打印源改为 AgentPanel 暴露的 printRef）
+// 7. PDF 导出：规范 Markdown 结构 + 攻略风排版，再截图切 A4
 // ==========================================================
 
+marked.setOptions({ async: false } as Parameters<typeof marked.setOptions>[0])
+
 const exporting = ref(false)
+/** A4 @96dpi 约 794px 宽 */
+const EXPORT_WIDTH = 794
 
-function prepareExportClone(source: HTMLElement): { wrapper: HTMLDivElement; clone: HTMLElement } {
-  const wrapper = document.createElement('div')
-  wrapper.style.position = 'fixed'
-  wrapper.style.left = '-100000px'
-  wrapper.style.top = '0'
-  wrapper.style.width = '1200px'
-  wrapper.style.background = '#ffffff'
-  wrapper.style.zIndex = '-1'
-  wrapper.style.pointerEvents = 'none'
+/** emoji → 中文标签，避免 html2canvas 乱码，同时保留语义 */
+function replaceEmojiForPdf(text: string): string {
+  return text
+    .replace(/🗺️/g, '')
+    .replace(/🌅/g, '【上午】')
+    .replace(/☀️/g, '【下午】')
+    .replace(/🌙/g, '【晚上】')
+    .replace(/📌/g, '')
+    .replace(/🚇/g, '交通：')
+    .replace(/🌤️/g, '天气：')
+    .replace(/🎫/g, '门票：')
+    .replace(/🍜/g, '美食：')
+    .replace(/📸|🏛️/g, '')
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{200D}]/gu, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
 
-  const clone = source.cloneNode(true) as HTMLElement
-  clone.style.width = '1200px'
-  clone.style.height = 'auto'
-  clone.style.maxHeight = 'none'
-  clone.style.overflow = 'visible'
-  clone.style.position = 'relative'
-  clone.style.display = 'block'
+/** 把松散正文收成可排版的 Markdown（标题 / 列表） */
+function normalizeMarkdownForPdf(raw: string): string {
+  let text = replaceEmojiForPdf(raw || '')
+  if (!text) return ''
 
-  const elements = [clone, ...Array.from(clone.querySelectorAll<HTMLElement>('*'))]
-  for (const node of elements) {
-    node.style.maxHeight = 'none'
-    node.style.overflow = 'visible'
-    if (node.classList.contains('overflow-y-auto') || node.classList.contains('overflow-hidden')) {
-      node.style.height = 'auto'
-      node.style.minHeight = '0'
+  text = text.replace(
+    /^好的[，,]?[\s\S]*?(?:现在为您生成行程|为您生成行程)[。.]?\s*/m,
+    '',
+  )
+  text = text
+    .split('\n')
+    .filter((line) => {
+      const t = line.trim()
+      if (!t) return true
+      if (/^好的[，,]/.test(t)) return false
+      if (/已获取到.+天气预报/.test(t)) return false
+      if (/现在为您生成行程/.test(t)) return false
+      return true
+    })
+    .join('\n')
+    .trim()
+
+  const start = text.search(/^(#{1,3}\s|Day\s*\d|实用贴士)/im)
+  if (start > 0) text = text.slice(start).trim()
+
+  // 行级规范化：Day / 贴士 → 二级标题；时段 → 列表项
+  text = text
+    .split('\n')
+    .map((line) => {
+      let t = line.trimEnd()
+      const s = t.trim()
+      if (!s) return ''
+
+      if (/^#{1,6}\s/.test(s)) return t
+
+      const day = s.match(/^Day\s*(\d+)\s*[：:·\-]?\s*(.*)$/i)
+      if (day) {
+        const theme = day[2].replace(/^[\-—–·\s]+/, '').trim()
+        return theme ? `## Day ${day[1]}  ${theme}` : `## Day ${day[1]}`
+      }
+
+      if (/^实用贴士/.test(s)) {
+        const rest = s.replace(/^实用贴士\s*[：:\-]?\s*/, '').trim()
+        return rest ? `## 实用贴士\n\n- ${rest}` : '## 实用贴士'
+      }
+
+      const slot = s.match(/^(?:[-*•]\s*)?(?:【?\s*)?(上午|下午|晚上)(?:\s*】)?\s*[：:]\s*(.+)$/)
+      if (slot) return `- **${slot[1]}**：${slot[2].trim()}`
+
+      const labeled = s.match(/^(?:[-*•]\s*)?(交通|天气|门票|美食)\s*[：:]\s*(.+)$/)
+      if (labeled) return `- **${labeled[1]}**：${labeled[2].trim()}`
+
+      return t
+    })
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+
+  return text
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+function buildExportHtml(): string {
+  const parts: string[] = []
+  const dest = destination.value || '旅行'
+  const dayCount = days.value || itineraryData.value.days.length || ''
+
+  parts.push(`
+    <header class="pdf-cover">
+      <div class="pdf-eyebrow">Travel Planner</div>
+      <h1 class="pdf-title">${escapeHtml(String(dest))} · ${escapeHtml(String(dayCount))} 天行程</h1>
+      <div class="pdf-rule"></div>
+    </header>
+  `)
+
+  const md = normalizeMarkdownForPdf(agent.state.cleanMarkdown || '')
+  if (md) {
+    const parsed = marked.parse(md)
+    const html = sanitizeHtml(typeof parsed === 'string' ? parsed : md)
+    parts.push(`<article class="pdf-body">${html}</article>`)
+  } else if (itineraryData.value.days.length) {
+    parts.push('<article class="pdf-body">')
+    for (const d of itineraryData.value.days) {
+      parts.push(`<h2>Day ${d.day}</h2><ul>`)
+      if (d.morning) parts.push(`<li><strong>上午</strong>：${escapeHtml(d.morning)}</li>`)
+      if (d.afternoon) parts.push(`<li><strong>下午</strong>：${escapeHtml(d.afternoon)}</li>`)
+      if (d.evening) parts.push(`<li><strong>晚上</strong>：${escapeHtml(d.evening)}</li>`)
+      parts.push('</ul>')
     }
+    parts.push('</article>')
   }
+  return parts.join('')
+}
 
-  wrapper.appendChild(clone)
-  document.body.appendChild(wrapper)
-  return { wrapper, clone }
+function createExportHost(): HTMLDivElement {
+  const host = document.createElement('div')
+  // 离屏定位隐藏；opacity 必须为 1，否则截图像「白纸/浅字」
+  host.style.cssText = [
+    'position:fixed',
+    'left:-10000px',
+    'top:0',
+    `width:${EXPORT_WIDTH}px`,
+    'box-sizing:border-box',
+    'background:#ffffff',
+    'color:#1e293b',
+    'overflow:visible',
+    'opacity:1',
+    'pointer-events:none',
+    'z-index:-1',
+  ].join(';')
+  host.innerHTML = buildExportHtml()
+
+  const style = document.createElement('style')
+  style.textContent = `
+    .pdf-cover, .pdf-body {
+      font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
+      color: #1e293b;
+    }
+    .pdf-cover {
+      padding: 36px 44px 20px;
+      background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .pdf-eyebrow {
+      font-size: 11px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: #64748b;
+      margin-bottom: 10px;
+      font-weight: 600;
+    }
+    .pdf-title {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.3;
+      font-weight: 800;
+      color: #0f172a !important;
+    }
+    .pdf-rule {
+      margin-top: 16px;
+      width: 56px;
+      height: 4px;
+      background: #2563eb;
+      border-radius: 2px;
+    }
+    .pdf-body {
+      padding: 28px 44px 48px;
+      font-size: 14.5px;
+      line-height: 1.85;
+    }
+    .pdf-body h1, .pdf-body h2, .pdf-body h3, .pdf-body h4 {
+      color: #0f172a !important;
+      font-weight: 750;
+      line-height: 1.35;
+      margin: 0 0 12px;
+    }
+    .pdf-body h1 { font-size: 22px; }
+    .pdf-body h2 {
+      font-size: 18px;
+      margin-top: 28px;
+      padding: 10px 14px;
+      background: #f1f5f9;
+      border-left: 4px solid #2563eb;
+      border-radius: 0 8px 8px 0;
+    }
+    .pdf-body h2:first-child { margin-top: 0; }
+    .pdf-body h3 { font-size: 16px; margin-top: 18px; }
+    .pdf-body p {
+      margin: 0 0 12px;
+      color: #334155 !important;
+    }
+    .pdf-body ul, .pdf-body ol {
+      margin: 0 0 16px;
+      padding-left: 0;
+      list-style: none;
+    }
+    .pdf-body li {
+      position: relative;
+      margin: 0 0 10px;
+      padding: 10px 14px 10px 16px;
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      color: #334155 !important;
+    }
+    .pdf-body strong {
+      color: #0f172a !important;
+      font-weight: 700;
+    }
+    .pdf-body hr {
+      margin: 24px 0;
+      border: none;
+      border-top: 1px dashed #cbd5e1;
+    }
+  `
+  host.prepend(style)
+  document.body.appendChild(host)
+  return host
+}
+
+/** 把整张 canvas 按 A4 可用高度切页写入 pdf */
+function addCanvasAsPdfPages(
+  pdf: jsPDF,
+  canvas: HTMLCanvasElement,
+  marginMm: number,
+) {
+  const pdfW = pdf.internal.pageSize.getWidth()
+  const pdfH = pdf.internal.pageSize.getHeight()
+  const usableW = pdfW - marginMm * 2
+  const usableH = pdfH - marginMm * 2
+
+  const imgW = canvas.width
+  const imgH = canvas.height
+  // 一页 PDF 对应多少 canvas 像素高
+  const pageHeightPx = Math.floor((usableH / usableW) * imgW)
+
+  let rendered = 0
+  let page = 0
+  while (rendered < imgH - 1) {
+    const sliceH = Math.min(pageHeightPx, imgH - rendered)
+    const pageCanvas = document.createElement('canvas')
+    pageCanvas.width = imgW
+    pageCanvas.height = sliceH
+    const ctx = pageCanvas.getContext('2d')!
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, imgW, sliceH)
+    ctx.drawImage(canvas, 0, rendered, imgW, sliceH, 0, 0, imgW, sliceH)
+
+    if (page > 0) pdf.addPage()
+    const drawH = (sliceH / imgW) * usableW
+    pdf.addImage(pageCanvas.toDataURL('image/jpeg', 0.93), 'JPEG', marginMm, marginMm, usableW, drawH)
+
+    rendered += sliceH
+    page++
+    if (page > 40) break
+  }
 }
 
 async function exportPDF() {
-  const printEl = agentPanelRef.value?.printRef as HTMLElement | null
-  if (!printEl || exporting.value) return
+  const hasContent = agent.state.cleanMarkdown || itineraryData.value.days.length > 0
+  if (!hasContent || exporting.value) return
 
   exporting.value = true
-  let exportWrapper: HTMLDivElement | null = null
+  let host: HTMLDivElement | null = null
 
   try {
-    const { wrapper, clone } = prepareExportClone(printEl)
-    exportWrapper = wrapper
+    host = createExportHost()
     await nextTick()
+    try {
+      await (document as any).fonts?.ready
+    } catch { /* ignore */ }
+    // 强制两次布局，确保 scrollHeight 量全
+    void host.offsetHeight
     await new Promise((r) => requestAnimationFrame(r))
-    await new Promise((r) => setTimeout(r, 500))
+    await new Promise((r) => setTimeout(r, 250))
 
-    const canvas = await html2canvas(clone, {
-      scale: 1.5,
-      useCORS: true,
-      backgroundColor: '#ffffff',
-      scrollX: 0,
-      scrollY: 0,
-      width: 1200,
-      height: clone.scrollHeight + 50,
-      windowWidth: 1200,
-      windowHeight: clone.scrollHeight + 50,
-      logging: false,
-    })
-    wrapper.remove()
-    exportWrapper = null
-
-    // A4 分页（保持原逻辑）
-    const pdf = new jsPDF('p', 'mm', 'a4')
-    const pdfW = pdf.internal.pageSize.getWidth()
-    const pdfH = pdf.internal.pageSize.getHeight()
-    const ratio = pdfW / canvas.width
-    const pageHeightPx = Math.floor(pdfH / ratio)
-
-    let page = 0
-    while (page * pageHeightPx < canvas.height) {
-      if (page > 0) pdf.addPage()
-
-      const srcY = page * pageHeightPx
-      const srcH = Math.min(pageHeightPx, canvas.height - srcY)
-
-      const pageCanvas = document.createElement('canvas')
-      pageCanvas.width = canvas.width
-      pageCanvas.height = srcH
-      const ctx = pageCanvas.getContext('2d')!
-      ctx.drawImage(canvas, 0, srcY, canvas.width, srcH, 0, 0, canvas.width, srcH)
-
-      const imgData = pageCanvas.toDataURL('image/jpeg', 0.92)
-      pdf.addImage(imgData, 'JPEG', 0, 0, pdfW, srcH * ratio)
-
-      page++
+    const totalH = Math.ceil(
+      Math.max(
+        host.scrollHeight,
+        host.offsetHeight,
+        host.clientHeight,
+        host.getBoundingClientRect().height,
+      ),
+    )
+    if (totalH < 10) {
+      alert('暂无可导出的行程内容')
+      return
     }
 
+    // 一次截全图（scale=1 降低 canvas 上限风险），再用 drawImage 切页
+    const canvas = await html2canvas(host, {
+      scale: 1,
+      useCORS: true,
+      backgroundColor: '#ffffff',
+      width: EXPORT_WIDTH,
+      height: totalH,
+      windowWidth: EXPORT_WIDTH,
+      windowHeight: totalH,
+      scrollX: 0,
+      scrollY: 0,
+      logging: false,
+    })
+
+    // 若截到的高度明显偏短，按内容块拆开再截（兜底）
+    if (canvas.height < totalH * 0.85) {
+      console.warn('[PDF] 整页截图偏短，改用分块导出', {
+        totalH,
+        canvasH: canvas.height,
+      })
+      await exportPdfByBlocks(host)
+      return
+    }
+
+    const pdf = new jsPDF('p', 'mm', 'a4')
+    addCanvasAsPdfPages(pdf, canvas, 10)
     pdf.save(`${destination.value || '旅行行程'}.pdf`)
   } catch (err) {
     console.error('PDF 导出失败:', err)
     alert('PDF 导出失败，请稍后重试')
   } finally {
-    exportWrapper?.remove()
+    host?.remove()
     exporting.value = false
   }
+}
+
+/** 兜底：按内容子块逐块截图拼 PDF，避免超长 canvas 被裁 */
+async function exportPdfByBlocks(host: HTMLDivElement) {
+  const cover = host.querySelector('.pdf-cover') as HTMLElement | null
+  const body = host.querySelector('.pdf-body') as HTMLElement | null
+
+  const targets: HTMLElement[] = []
+  if (cover) targets.push(cover)
+  if (body) {
+    const kids = Array.from(body.children).filter(
+      (n): n is HTMLElement => n instanceof HTMLElement,
+    )
+    if (kids.length) targets.push(...kids)
+    else targets.push(body)
+  }
+
+  const pdf = new jsPDF('p', 'mm', 'a4')
+  const pdfW = pdf.internal.pageSize.getWidth()
+  const pdfH = pdf.internal.pageSize.getHeight()
+  const margin = 10
+  const usableW = pdfW - margin * 2
+  const usableH = pdfH - margin * 2
+  let cursorY = margin
+  let needNewPageHeader = true
+
+  const newPage = () => {
+    if (!needNewPageHeader) pdf.addPage()
+    needNewPageHeader = false
+    cursorY = margin
+  }
+  newPage()
+
+  for (const el of targets) {
+    const box = el.getBoundingClientRect()
+    if (box.height < 2) continue
+
+    const canvas = await html2canvas(el, {
+      scale: 1,
+      useCORS: true,
+      backgroundColor: '#ffffff',
+      logging: false,
+    })
+    if (canvas.width < 2 || canvas.height < 2) continue
+
+    const drawH = (canvas.height / canvas.width) * usableW
+
+    if (drawH > usableH) {
+      if (cursorY > margin + 1) newPage()
+      addCanvasAsPdfPages(pdf, canvas, margin)
+      needNewPageHeader = false
+      cursorY = pdfH
+      continue
+    }
+
+    if (cursorY + drawH > pdfH - margin) newPage()
+
+    pdf.addImage(
+      canvas.toDataURL('image/jpeg', 0.93),
+      'JPEG',
+      margin,
+      cursorY,
+      usableW,
+      drawH,
+    )
+    cursorY += drawH + 3
+  }
+
+  pdf.save(`${destination.value || '旅行行程'}.pdf`)
 }
 </script>

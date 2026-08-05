@@ -17,7 +17,7 @@ from typing import AsyncGenerator
 from app.core.config import settings
 from app.llm.deepseek import chat_completion_stream, chat_completion_simple
 from app.agents.executor import execute_tool_calls, build_tool_messages
-from app.agents.prompts.planner import PLANNER_SYSTEM_PROMPT
+from app.agents.prompts.planner import FINALIZE_SYSTEM_PROMPT
 from app.tools.registry import build_tools_schema
 from app.models.response import SSEEvent
 from app.session.store import session_store
@@ -268,12 +268,23 @@ async def _run_planner_executor(
     # ── 3. Finalize：基于 Executor 收集到的真实数据，流式撰写最终行程 ──
     yield _emit("agent_think", "正在撰写行程文案...")
 
+    # 工具摘要合并进单一 user 消息，避免连发多条 assistant「已执行工具调用…」
+    # 导致模型复述工具日志而不是写行程文案
+    data_block = _build_finalize_data_block(state.messages)
     messages: list[dict] = [
-        {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
-        {"role": "user", "content": state.user_input},
+        {"role": "system", "content": FINALIZE_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                f"{state.user_input}\n\n"
+                f"{data_block}\n\n"
+                "请根据以上真实数据，直接输出完整 Markdown 行程文案（结构见系统提示），"
+                "末尾附一个 JSON 代码块。"
+                "禁止复述「已执行工具调用」或任何工具日志原文；"
+                "禁止输出 XML/HTML；禁止再调用工具。"
+            ),
+        },
     ]
-    # 将 Executor 的 tool_call 消息转为纯文本摘要，避免 LLM 在 Finalize 时输出 tool_calls XML
-    messages.extend(_simplify_messages_for_finalize(state.messages))
 
     try:
         llm_response = None
@@ -285,6 +296,41 @@ async def _run_planner_executor(
         if llm_response is None:
             yield await _emit_error_with_trace(_emit, "LLM_EMPTY", "LLM 未返回任何内容")
             return
+
+        content = (llm_response.content or "").strip()
+        # 文案过短或复述工具日志时，再非流式补写一次（仅 Finalize，不影响其它路径）
+        if len(content) < 120 or content.startswith("已执行工具调用"):
+            try:
+                rescued = await asyncio.wait_for(
+                    chat_completion_simple(
+                        [
+                            {"role": "system", "content": FINALIZE_SYSTEM_PROMPT},
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"{state.user_input}\n\n{data_block}\n\n"
+                                    "请输出完整 Markdown 行程（含 Day 结构与末尾 JSON）。"
+                                    "不要输出工具日志。"
+                                ),
+                            },
+                        ],
+                        max_tokens=3500,
+                    ),
+                    timeout=settings.finalize_timeout,
+                )
+                rescued = (rescued or "").strip()
+                if len(rescued) > len(content):
+                    content = rescued
+                    # 前端此前可能已收到劣质 chunk，用完整正文再推一次覆盖观感
+                    yield _emit("chunk", "\n\n" + content)
+            except Exception:
+                logger.warning("[Finalize] rescue rewrite failed", exc_info=True)
+
+        if content:
+            # 用最终正文覆盖 messages，供后续 JSON 提取
+            messages.append({"role": "assistant", "content": content})
+            llm_response.content = content
+
     except asyncio.TimeoutError:
         yield await _emit_error_with_trace(
             _emit,
@@ -302,9 +348,6 @@ async def _run_planner_executor(
             pass
         return
 
-    if llm_response.content and llm_response.content.strip():
-        messages.append({"role": "assistant", "content": llm_response.content})
-
     async for ev in _finalize(
         _emit,
         request_id,
@@ -316,6 +359,7 @@ async def _run_planner_executor(
         user_id=user_id,
         extract_text="",
         extract_styles=styles,
+        places_source=state.messages,
     ):
         yield ev
 
@@ -465,6 +509,7 @@ async def _finalize(
     user_id: str | None = None,
     extract_text: str = "",
     extract_styles: list[str] | None = None,
+    places_source: list[dict] | None = None,
 ) -> AsyncGenerator[SSEEvent, None]:
     yield _emit("agent_think", "正在整理最终行程数据...")
     await trace_manager.record_step(
@@ -489,7 +534,13 @@ async def _finalize(
         "allPlaces": all_places,
     })
 
-    places_detail = _collect_places_from_messages(messages)
+    # Finalize 文案 messages 里通常没有 role=tool；坐标必须从 Executor 原始工具结果收集
+    places_detail = _collect_places_from_messages(places_source or messages)
+    if all_places:
+        wanted = {n for n in all_places if n}
+        matched = [p for p in places_detail if p.get("name") in wanted and p.get("lng") and p.get("lat")]
+        if matched:
+            places_detail = matched
     resolved_session_id = _persist_session(
         session_id, destination, days, styles, messages,
         itinerary=final_itinerary, user_id=user_id, places_detail=places_detail,
@@ -574,13 +625,17 @@ async def _extract_itinerary_json(
     days: int,
     previous: dict | None = None,
 ) -> dict:
-    """用一次轻量 LLM 调用提取/整理最终的 JSON 行程数据。
+    """提取最终行程 JSON。
 
-    如果提供了 previous 行程，则在此基础之上合并新信息（如追加拿到的美食/景点），
-    而不是从头生成一份新行程。
+    优先从 Finalize 文案末尾的 ```json 块解析（快且稳），失败再轻量 LLM 抽取。
     """
+    # 1) 优先：直接解析助手文案里的 JSON（新生成路径的主路径）
+    parsed = _parse_itinerary_json_from_messages(messages)
+    if parsed and parsed.get("days") and not (previous and previous.get("days")):
+        return _normalize_itinerary(parsed, days)
+
     if previous and previous.get("days"):
-        prev_json = __import__("json").dumps(previous, ensure_ascii=False, indent=2)
+        prev_json = json.dumps(previous, ensure_ascii=False, indent=2)
         merge_instruction = (
             f"【已存在的行程（请在此基础上更新，不要删除已有内容）】:\n{prev_json}\n\n"
             "用户提出了新的要求。请把新的信息合并到已有行程中（例如把推荐的美食添加到对应日期的晚上时段、"
@@ -601,54 +656,143 @@ async def _extract_itinerary_json(
         "- 只输出 JSON，不要其他文字"
     )
 
-    # Pass ALL messages (or at least a much larger window) so the LLM has full context
-    recent_msgs = messages[-20:] if len(messages) > 20 else messages
-    extract_messages = [
+    # 2) 只喂「行程正文」，避免把 Finalize 的 system/工具附录整包塞进抽取，导致抽空
+    assistant_text = ""
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant" and isinstance(msg.get("content"), str) and msg["content"].strip():
+            assistant_text = msg["content"].strip()
+            break
+
+    extract_messages: list[dict] = [
         {"role": "system", "content": system_prompt},
     ]
     if merge_instruction:
         extract_messages.append({"role": "user", "content": merge_instruction})
-    extract_messages.append(
-        {"role": "user", "content": f"请从以下对话提取行程 JSON：\n\n{destination}{days}天"}
-    )
-    extract_messages.extend(recent_msgs)
+    extract_messages.append({
+        "role": "user",
+        "content": (
+            f"请从以下行程文案提取 JSON（目的地 {destination}，{days} 天）：\n\n"
+            f"{assistant_text or '（无正文，请按目的地生成空结构占位）'}"
+        ),
+    })
 
     try:
         raw = await asyncio.wait_for(
             chat_completion_simple(extract_messages, max_tokens=1500),
             timeout=settings.finalize_timeout,
         )
-        # 尝试解析 JSON
         json_match = raw.strip()
-        # 去掉可能的 markdown 代码块包裹
         if "```json" in json_match:
             json_match = json_match.split("```json")[1].split("```")[0]
         elif "```" in json_match:
             json_match = json_match.split("```")[1].split("```")[0]
-        return json.loads(json_match.strip())
+        data = json.loads(json_match.strip())
+        if data.get("days"):
+            return _normalize_itinerary(data, days)
     except (json.JSONDecodeError, Exception):
-        # Fallback: 从原始 messages 正则提取
-        for msg in reversed(messages):
-            if msg.get("role") != "assistant":
-                continue
-            content = msg.get("content", "")
-            match = __import__("re").search(r'```json\s*([\s\S]*?)\s*```', content or "")
-            if match:
+        pass
+
+    if parsed and parsed.get("days"):
+        return _normalize_itinerary(parsed, days)
+    return previous if previous else {"days": [], "allPlaces": []}
+
+
+def _parse_itinerary_json_from_messages(messages: list[dict]) -> dict | None:
+    """从助手 Markdown 末尾 ```json 块解析行程。"""
+    import re
+
+    for msg in reversed(messages):
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content") or ""
+        if not isinstance(content, str):
+            continue
+        match = re.search(r"```json\s*([\s\S]*?)\s*```", content)
+        if not match:
+            # 兼容无 fence 的纯 JSON 尾巴
+            match = re.search(r"(\{\s*\"days\"\s*:\s*\[[\s\S]*\]\s*,\s*\"allPlaces\"\s*:\s*\[[\s\S]*\]\s*\})", content)
+        if not match:
+            continue
+        try:
+            data = json.loads(match.group(1))
+            if isinstance(data, dict) and isinstance(data.get("days"), list):
+                return data
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def _normalize_itinerary(data: dict, days: int) -> dict:
+    """补齐字段，保证前端左侧 Day 列表能渲染。"""
+    raw_days = data.get("days") or []
+    norm_days = []
+    for i, d in enumerate(raw_days):
+        if not isinstance(d, dict):
+            continue
+        norm_days.append({
+            "day": int(d.get("day") or (i + 1)),
+            "morning": (d.get("morning") or "").strip(),
+            "afternoon": (d.get("afternoon") or "").strip(),
+            "evening": (d.get("evening") or "").strip(),
+        })
+    all_places = data.get("allPlaces") or []
+    if not isinstance(all_places, list):
+        all_places = []
+    if not all_places:
+        names: list[str] = []
+        for d in norm_days:
+            for key in ("morning", "afternoon", "evening"):
+                name = d.get(key) or ""
+                if name and name not in names:
+                    names.append(name)
+        all_places = names
+    # 若模型少写了天数，不强制补空天，原样返回有内容的部分
+    _ = days
+    return {"days": norm_days, "allPlaces": all_places}
+
+
+def _build_finalize_data_block(messages: list[dict]) -> str:
+    """把 Executor 的 tool_call / tool 结果压成一段「数据附录」，供 Finalize 撰写。
+
+    不要再拆成多条 role=assistant 的「已执行工具调用…」，否则模型容易复述日志。
+    """
+    lines: list[str] = [
+        "【已收集的真实工具数据】（仅供你规划行程时参考，不要复述本段原文，不要写「已执行工具调用」）",
+    ]
+    for msg in messages:
+        role = msg.get("role", "")
+        if role == "assistant" and msg.get("tool_calls"):
+            for tc in msg.get("tool_calls", []):
+                fn = tc.get("function", {})
+                name = fn.get("name", "unknown")
                 try:
-                    return json.loads(match.group(1))
-                except json.JSONDecodeError:
-                    continue
-        # Last resort: keep previous itinerary if available, else empty
-        return previous if previous else {"days": [], "allPlaces": []}
+                    args = json.loads(fn.get("arguments", "{}"))
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+                lines.append(f"- 调用：{_summarize_tool_call(name, args)}")
+        elif role == "tool":
+            try:
+                result = (
+                    json.loads(msg.get("content", "{}"))
+                    if isinstance(msg.get("content"), str)
+                    else msg.get("content", {})
+                )
+            except json.JSONDecodeError:
+                result = {}
+            summary = _summarize_tool_result(result)
+            if summary:
+                lines.append(f"- 结果：{summary}")
+    if len(lines) == 1:
+        lines.append("- （暂无额外工具结果，请基于目的地做合理规划，并如实说明信息有限）")
+    return "\n".join(lines)
 
 
 def _simplify_messages_for_finalize(messages: list[dict]) -> list[dict]:
-    """将 Executor 产生的 tool_call 消息转成纯文本，避免 LLM 在 Finalize 阶段输出 tool_calls XML。"""
+    """兼容旧逻辑：将 tool 消息转为纯文本（现主要由 _build_finalize_data_block 使用）。"""
     simplified: list[dict] = []
     for msg in messages:
         role = msg.get("role", "")
         if role == "assistant" and msg.get("tool_calls"):
-            # Convert OpenAI tool_call assistant message to plain text
             tool_names = []
             for tc in msg.get("tool_calls", []):
                 fn = tc.get("function", {})
@@ -663,7 +807,6 @@ def _simplify_messages_for_finalize(messages: list[dict]) -> list[dict]:
                 "content": "已执行工具调用：" + "；".join(tool_names),
             })
         elif role == "tool":
-            # Convert tool result message to plain text summary
             try:
                 result = json.loads(msg.get("content", "{}")) if isinstance(msg.get("content"), str) else msg.get("content", {})
             except json.JSONDecodeError:
@@ -696,10 +839,19 @@ def _summarize_tool_result(result: dict) -> str:
         return "工具执行完成"
     if result.get("error"):
         return f"工具执行出错：{result['error']}"
-    if result.get("pois_total"):
-        return f"搜索到 {result['pois_total']} 个景点"
     if result.get("forecasts"):
-        return f"获取到 {len(result['forecasts'])} 天天气预报"
+        bits = []
+        for f in result["forecasts"][:5]:
+            if not isinstance(f, dict):
+                continue
+            day = f.get("date") or f.get("week") or ""
+            weather = f.get("dayweather") or f.get("weather") or ""
+            temp = ""
+            if f.get("daytemp") is not None or f.get("nighttemp") is not None:
+                temp = f"{f.get('daytemp', '')}/{f.get('nighttemp', '')}℃"
+            bits.append(" ".join(x for x in (str(day), str(weather), temp) if x).strip())
+        detail = "；".join(b for b in bits if b)
+        return f"天气预报（{len(result['forecasts'])}天）" + (f"：{detail}" if detail else "")
     if result.get("distance_text"):
         return f"路线距离 {result['distance_text']}，约 {result.get('duration_text', '')}"
     if result.get("flights"):
@@ -707,10 +859,13 @@ def _summarize_tool_result(result: dict) -> str:
     if result.get("hotels"):
         return f"找到 {len(result['hotels'])} 家酒店"
     if result.get("pois"):
-        names = [p.get("name", "") for p in result["pois"][:5] if p.get("name")]
+        names = [p.get("name", "") for p in result["pois"][:10] if p.get("name")]
         if names:
-            return f"搜索到景点：{'、'.join(names)}"
+            extra = f"等共 {result.get('pois_total') or len(result['pois'])} 个" if len(result["pois"]) > 10 or result.get("pois_total") else ""
+            return f"搜索到景点：{'、'.join(names)}{extra}"
         return f"搜索到 {len(result['pois'])} 个结果"
+    if result.get("pois_total"):
+        return f"搜索到 {result['pois_total']} 个景点"
     return "工具执行完成"
 
 
@@ -819,9 +974,24 @@ def _collect_places_from_messages(messages: list[dict]) -> list[dict]:
             continue
         if isinstance(data, dict) and "pois" in data:
             for poi in data["pois"]:
+                name = poi.get("name", "")
+                if not name:
+                    continue
                 places.append({
-                    "name": poi.get("name", ""),
+                    "name": name,
                     "lng": poi.get("lng", 0),
                     "lat": poi.get("lat", 0),
+                    "address": poi.get("address", "") or "",
+                    "tel": (poi.get("tel") or "").strip(),
+                    "category": poi.get("category", "") or "",
                 })
-    return places
+    # 同名去重，保留首次（通常信息更全）
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for p in places:
+        key = p.get("name", "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(p)
+    return deduped

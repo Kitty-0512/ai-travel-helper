@@ -83,6 +83,11 @@ class PoiProvider(BaseProvider):
         pois = []
         for p in data.get("pois", []):
             loc = p.get("location", "0,0").split(",")
+            biz = p.get("biz_ext") or {}
+            if not isinstance(biz, dict):
+                biz = {}
+            tel = (p.get("tel") or biz.get("tel") or "").strip()
+            # 高德偶发多号用分号/斜杠分隔，前端直接展示
             pois.append(
                 {
                     "name": p.get("name", ""),
@@ -90,7 +95,8 @@ class PoiProvider(BaseProvider):
                     "lng": float(loc[0]) if len(loc) == 2 else 0,
                     "lat": float(loc[1]) if len(loc) == 2 else 0,
                     "category": p.get("type", ""),
-                    "rating": p.get("biz_ext", {}).get("rating", ""),
+                    "rating": biz.get("rating", ""),
+                    "tel": tel,
                 }
             )
 

@@ -31,6 +31,9 @@ export interface SessionDetail {
     name: string
     lng: number
     lat: number
+    address?: string
+    tel?: string
+    category?: string
   }[] | null
   markdown_text: string
   created_at: string

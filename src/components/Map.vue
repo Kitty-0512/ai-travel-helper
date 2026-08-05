@@ -83,10 +83,15 @@ const mapRef = ref<HTMLDivElement>()
 let map: any = null
 let AMap: any = null
 let placeSearch: any = null
+let geocoder: any = null
 
 let markers: any[] = []
 let polylines: any[] = []
 let drivingInstances: any[] = []
+
+/** 防止 places/dayGroups 连续更新时叠多重绘，打爆浏览器连接数 */
+let renderToken = 0
+let renderTimer: ReturnType<typeof setTimeout> | null = null
 
 const routeLoading = ref(false)
 const isOptimize = ref(false)
@@ -135,7 +140,7 @@ async function initMap() {
   AMap = await AMapLoader.load({
     key: AMAP_KEY,
     version: "2.0",
-    plugins: ["AMap.PlaceSearch", "AMap.Driving", "AMap.Walking", "AMap.Riding"],
+    plugins: ["AMap.PlaceSearch", "AMap.Geocoder", "AMap.Driving", "AMap.Walking", "AMap.Riding"],
   })
 
   map = new AMap.Map(mapRef.value!, {
@@ -145,41 +150,202 @@ async function initMap() {
     mapStyle: "amap://styles/normal",
   })
 
-  placeSearch = new AMap.PlaceSearch({ city: "" })
+  // 初始化时 destination 常为空；真正带 city 的实例在每次 search 时重建
+  placeSearch = null
   mapReadyResolve()
 }
 
 onMounted(() => initMap())
-onUnmounted(() => map?.destroy())
+onUnmounted(() => {
+  if (renderTimer) clearTimeout(renderTimer)
+  renderToken += 1
+  clearMap()
+  map?.destroy()
+  map = null
+})
 
 // ========================
 // 地理编码（带缓存+延迟）
 // ========================
 
+/** props.destination 为空时，用 done/seed 注入的城市兜底 */
+let lockedCity = ""
+
+function resolveCity(): string {
+  return (props.destination || lockedCity || "").trim()
+}
+
+/** 父组件在点击「生成」时立即调用，避免 itinerary 先到、city 还未锁定 */
+function lockCity(city: string) {
+  const c = (city || "").trim()
+  if (!c) return
+  lockedCity = c
+}
+
+function buildSearchKeyword(name: string, city: string): string {
+  if (!city) return name
+  if (name.includes(city)) return name
+  // 明确写成「城市+名称」，请求里 keywords 应出现城市前缀
+  return `${city}${name}`
+}
+
+/** 每次按城市新建实例，避免 setCity 写不进请求 */
+function ensurePlaceSearch(city: string) {
+  if (!AMap || !city) return
+  placeSearch = new AMap.PlaceSearch({ city, citylimit: true })
+}
+
+function ensureGeocoder(city: string) {
+  if (!AMap || !city) return
+  geocoder = new AMap.Geocoder({ city, citylimit: true })
+}
+
+function cacheKey(name: string): string {
+  return `${resolveCity()}::${name}`
+}
+
+function cityMatches(poiCity: string | undefined, dest: string): boolean {
+  if (!dest) return true
+  if (!poiCity) return false
+  const a = poiCity.replace(/市$|省$|自治区|特别行政区/g, "")
+  const b = dest.replace(/市$|省$|自治区|特别行政区/g, "")
+  return poiCity.includes(b) || dest.includes(a) || a.includes(b) || b.includes(a)
+}
+
+function pickPoiInCity(pois: any[], dest: string): any | null {
+  if (!pois?.length) return null
+  if (!dest) return null
+  return pois.find((p) => cityMatches(p.cityname || p.pname, dest)) || null
+}
+
 function searchPlace(name: string): Promise<[number, number] | null> {
-  if (coordCache.has(name)) return Promise.resolve(coordCache.get(name)!)
+  const city = resolveCity()
+  const key = cacheKey(name)
+  if (coordCache.has(key)) return Promise.resolve(coordCache.get(key)!)
+
   return new Promise((resolve) => {
-    placeSearch.search(name, (status: string, result: any) => {
-      if (status === "complete" && result.poiList?.pois?.length) {
-        const poi = result.poiList.pois[0]
-        const coord: [number, number] = [poi.location.lng, poi.location.lat]
-        coordCache.set(name, coord)
-        poiCache.set(name, {
-          address: poi.address || "暂无地址",
-          tel: poi.tel || "",
-          type: poi.type || "",
-        })
-        resolve(coord)
-      } else {
+    if (!AMap) {
+      resolve(null)
+      return
+    }
+    if (!city) {
+      console.warn("[Map] 跳过搜索（目的地城市为空）:", name)
+      resolve(null)
+      return
+    }
+
+    const keyword = buildSearchKeyword(name, city)
+
+    const finish = (
+      coord: [number, number] | null,
+      poi?: { address?: string; tel?: string; type?: string },
+    ) => {
+      if (!coord) {
         resolve(null)
+        return
       }
-    })
+      coordCache.set(key, coord)
+      const prev = poiCache.get(key)
+      poiCache.set(key, {
+        address: poi?.address || prev?.address || "暂无地址",
+        tel: (poi?.tel || prev?.tel || "").trim(),
+        type: poi?.type || prev?.type || "",
+      })
+      resolve(coord)
+    }
+
+    // 优先 Geocoder：city 参数更可靠
+    ensureGeocoder(city)
+    if (geocoder) {
+      geocoder.getLocation(keyword, (status: string, result: any) => {
+        const geocodes = result?.geocodes || []
+        if (status === "complete" && geocodes.length) {
+          const geo = geocodes.find((g: any) => cityMatches(g.city || g.province, city)) || geocodes[0]
+          if (geo?.location && cityMatches(geo.city || geo.province, city)) {
+            finish([geo.location.lng, geo.location.lat], { address: geo.formattedAddress })
+            return
+          }
+        }
+        // Geocoder 未命中时回退 PlaceSearch
+        searchWithPlaceSearch(keyword, city, name, finish)
+      })
+      return
+    }
+
+    searchWithPlaceSearch(keyword, city, name, finish)
   })
 }
 
-async function searchAllPlaces(names: string[]): Promise<{ name: string; coord: [number, number] }[]> {
+function searchWithPlaceSearch(
+  keyword: string,
+  city: string,
+  name: string,
+  finish: (
+    coord: [number, number] | null,
+    poi?: { address?: string; tel?: string; type?: string },
+  ) => void,
+) {
+  ensurePlaceSearch(city)
+  if (!placeSearch) {
+    finish(null)
+    return
+  }
+  placeSearch.search(keyword, (status: string, result: any) => {
+    const pois = result?.poiList?.pois || []
+    if (status === "complete" && pois.length) {
+      const poi = pickPoiInCity(pois, city)
+      if (!poi) {
+        console.warn("[Map] PlaceSearch 结果不在目的地城市:", name, "city=", city, "top=", pois[0]?.cityname)
+        finish(null)
+        return
+      }
+      finish([poi.location.lng, poi.location.lat], {
+        address: poi.address,
+        tel: poi.tel || "",
+        type: poi.type || "",
+      })
+    } else {
+      console.warn("[Map] PlaceSearch 未命中:", name, "city=", city, "keyword=", keyword)
+      finish(null)
+    }
+  })
+}
+
+/** 用后端 places_detail 预填坐标/电话；第二个参数可锁定城市 */
+function seedCoords(
+  details: {
+    name: string
+    lng: number
+    lat: number
+    address?: string
+    tel?: string
+    category?: string
+  }[],
+  city?: string,
+) {
+  if (city?.trim()) lockedCity = city.trim()
+  else if (props.destination?.trim()) lockedCity = props.destination.trim()
+
+  for (const p of details || []) {
+    if (!p?.name || !p.lng || !p.lat) continue
+    const key = cacheKey(p.name)
+    coordCache.set(key, [p.lng, p.lat])
+    poiCache.set(key, {
+      address: p.address || "",
+      tel: (p.tel || "").trim(),
+      type: p.category || "",
+    })
+  }
+  if (props.places?.length) scheduleRenderPlaces(props.places)
+}
+
+async function searchAllPlaces(
+  names: string[],
+  token: number,
+): Promise<{ name: string; coord: [number, number] }[]> {
   const results: { name: string; coord: [number, number] }[] = []
   for (const name of names) {
+    if (token !== renderToken) return results
     const coord = await searchPlace(name)
     if (coord) results.push({ name, coord })
     await new Promise((r) => setTimeout(r, 300))
@@ -239,11 +405,18 @@ function greedyOptimize(
 // ========================
 
 function clearMap() {
-  markers.forEach((m) => map.remove(m))
+  markers.forEach((m) => map?.remove(m))
   markers = []
-  polylines.forEach((p) => map.remove(p))
+  polylines.forEach((p) => map?.remove(p))
   polylines = []
-  drivingInstances.forEach((d) => d.clear?.())
+  drivingInstances.forEach((d) => {
+    try {
+      d.clear?.()
+      d.setMap?.(null)
+    } catch {
+      /* ignore */
+    }
+  })
   drivingInstances = []
 }
 
@@ -274,19 +447,23 @@ function addMarker(
   })
 
   marker.on("click", () => {
-    const poi = poiCache.get(name)
+    const poi = poiCache.get(cacheKey(name))
     const safeName = escapeHtml(name)
     const safeAddress = poi?.address ? escapeHtml(poi.address) : ""
-    const safeTel = poi?.tel ? escapeHtml(poi.tel) : ""
-    const safeType = poi?.type ? escapeHtml(poi.type.split(";")[0]) : ""
+    const rawTel = (poi?.tel || "").trim()
+    const safeTel = rawTel ? escapeHtml(rawTel) : ""
+    const telHref = rawTel ? rawTel.split(/[;；,/|]/)[0].trim() : ""
+    const safeType = poi?.type ? escapeHtml(String(poi.type).split(";")[0]) : ""
     const navUrl = buildAmapNavigationUrl(name, coord)
     const ticketUrl = buildTicketUrl(name)
     const content = `<div style="padding:12px 14px;min-width:220px;font-size:13px;line-height:1.9">
       <div style="font-weight:600;font-size:14px;margin-bottom:4px;color:#1f2937">${label}. ${safeName}</div>
-      ${safeAddress ? `<div style="color:#6b7280">${safeAddress}</div>` : ""}
+      ${safeAddress ? `<div style="color:#6b7280">地址：${safeAddress}</div>` : ""}
+      ${safeTel
+        ? `<div style="color:#6b7280">电话：<a href="tel:${escapeHtml(telHref)}" style="color:#2563eb;text-decoration:none">${safeTel}</a></div>`
+        : `<div style="color:#9ca3af">电话：暂无收录</div>`}
       <div style="color:#6b7280">坐标：<a href="${navUrl}" target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:none">${coord[0].toFixed(6)}, ${coord[1].toFixed(6)}</a></div>
-      ${safeTel ? `<div style="color:#6b7280">${safeTel}</div>` : ""}
-      ${safeType ? `<div style="color:#6b7280">${safeType}</div>` : ""}
+      ${safeType ? `<div style="color:#6b7280">类型：${safeType}</div>` : ""}
       <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
         <a
           href="${navUrl}"
@@ -327,11 +504,12 @@ function drawStraightLine(coords: [number, number][], color: string) {
   polylines.push(poly)
 }
 
-async function planDriving(coords: [number, number][], color: string) {
-  if (coords.length < 2) return
+async function planDriving(coords: [number, number][], color: string, token: number) {
+  if (coords.length < 2 || token !== renderToken) return
   const driving = new AMap.Driving({
     map,
     hideMarkers: true,
+    showTraffic: false,
     polylineOptions: { strokeColor: color, strokeWeight: 4, strokeOpacity: 0.9 },
   })
   drivingInstances.push(driving)
@@ -342,6 +520,11 @@ async function planDriving(coords: [number, number][], color: string) {
       new AMap.LngLat(coords[coords.length - 1][0], coords[coords.length - 1][1]),
       { waypoints },
       (status: string) => {
+        if (token !== renderToken) {
+          try { driving.clear?.(); driving.setMap?.(null) } catch { /* ignore */ }
+          resolve()
+          return
+        }
         if (status !== "complete") drawStraightLine(coords, color)
         resolve()
       }
@@ -349,17 +532,24 @@ async function planDriving(coords: [number, number][], color: string) {
   })
 }
 
-async function planWalking(coords: [number, number][], color: string) {
+async function planWalking(coords: [number, number][], color: string, token: number) {
   for (let i = 0; i < coords.length - 1; i++) {
+    if (token !== renderToken) return
     const walking = new AMap.Walking({
       map, hideMarkers: true,
       polylineOptions: { strokeColor: color, strokeWeight: 4 },
     })
+    drivingInstances.push(walking)
     await new Promise<void>((resolve) => {
       walking.search(
         new AMap.LngLat(coords[i][0], coords[i][1]),
         new AMap.LngLat(coords[i + 1][0], coords[i + 1][1]),
         (status: string) => {
+          if (token !== renderToken) {
+            try { walking.clear?.(); walking.setMap?.(null) } catch { /* ignore */ }
+            resolve()
+            return
+          }
           if (status !== "complete") drawStraightLine([coords[i], coords[i + 1]], color)
           resolve()
         }
@@ -369,17 +559,24 @@ async function planWalking(coords: [number, number][], color: string) {
   }
 }
 
-async function planRiding(coords: [number, number][], color: string) {
+async function planRiding(coords: [number, number][], color: string, token: number) {
   for (let i = 0; i < coords.length - 1; i++) {
+    if (token !== renderToken) return
     const riding = new AMap.Riding({
       map, hideMarkers: true,
       polylineOptions: { strokeColor: color, strokeWeight: 4 },
     })
+    drivingInstances.push(riding)
     await new Promise<void>((resolve) => {
       riding.search(
         new AMap.LngLat(coords[i][0], coords[i][1]),
         new AMap.LngLat(coords[i + 1][0], coords[i + 1][1]),
         (status: string) => {
+          if (token !== renderToken) {
+            try { riding.clear?.(); riding.setMap?.(null) } catch { /* ignore */ }
+            resolve()
+            return
+          }
           if (status !== "complete") drawStraightLine([coords[i], coords[i + 1]], color)
           resolve()
         }
@@ -389,11 +586,11 @@ async function planRiding(coords: [number, number][], color: string) {
   }
 }
 
-async function drawRoute(coords: [number, number][], color: string) {
-  if (coords.length < 2) return
-  if (currentMode.value === "driving") await planDriving(coords, color)
-  else if (currentMode.value === "walking") await planWalking(coords, color)
-  else if (currentMode.value === "riding") await planRiding(coords, color)
+async function drawRoute(coords: [number, number][], color: string, token: number) {
+  if (coords.length < 2 || token !== renderToken) return
+  if (currentMode.value === "driving") await planDriving(coords, color, token)
+  else if (currentMode.value === "walking") await planWalking(coords, color, token)
+  else if (currentMode.value === "riding") await planRiding(coords, color, token)
   else drawStraightLine(coords, color)
 }
 
@@ -403,56 +600,76 @@ async function drawRoute(coords: [number, number][], color: string) {
 
 async function renderPlaces(places: string[]) {
   await mapReadyPromise
-  if (!places?.length) return
+  if (!map || !places?.length) return
 
+  const token = ++renderToken
   routeLoading.value = true
   optimizeInfo.value = ""
   clearMap()
 
   const hasMultipleDays = props.dayGroups && props.dayGroups.length > 1
 
-  if (hasMultipleDays) {
-    // ---- 多日分色模式 ----
-    dayColors.value = props.dayGroups!.map((_, i) => DAY_COLORS[i % DAY_COLORS.length])
+  try {
+    if (hasMultipleDays) {
+      // ---- 多日分色模式 ----
+      dayColors.value = props.dayGroups!.map((_, i) => DAY_COLORS[i % DAY_COLORS.length])
 
-    for (let day = 0; day < props.dayGroups!.length; day++) {
-      const color = DAY_COLORS[day % DAY_COLORS.length]
-      const dayItems = await searchAllPlaces(props.dayGroups![day])
+      for (let day = 0; day < props.dayGroups!.length; day++) {
+        if (token !== renderToken) return
+        const color = DAY_COLORS[day % DAY_COLORS.length]
+        const dayItems = await searchAllPlaces(props.dayGroups![day], token)
+        if (token !== renderToken) return
 
-      dayItems.forEach((item, i) => {
-        addMarker(item.coord, `D${day + 1}-${i + 1}`, item.name, color)
-      })
+        dayItems.forEach((item, i) => {
+          addMarker(item.coord, `D${day + 1}-${i + 1}`, item.name, color)
+        })
 
-      if (dayItems.length > 1) {
-        await drawRoute(dayItems.map((d) => d.coord), color)
+        if (dayItems.length > 1) {
+          await drawRoute(dayItems.map((d) => d.coord), color, token)
+        }
+      }
+
+    } else {
+      // ---- 单色模式 + 最短路径优化 ----
+      dayColors.value = []
+      let items = await searchAllPlaces(places, token)
+      if (token !== renderToken) return
+
+      if (isOptimize.value && items.length > 2) {
+        const beforeKm = calcTotalKm(items.map((d) => d.coord))
+        items = greedyOptimize(items)
+        const afterKm = calcTotalKm(items.map((d) => d.coord))
+        const saved = beforeKm - afterKm
+        optimizeInfo.value = saved > 0
+          ? `已优化！节省约 ${saved} km`
+          : "当前顺序已是最优"
+      }
+
+      const color = DAY_COLORS[0]
+      items.forEach((item, i) => addMarker(item.coord, String(i + 1), item.name, color))
+
+      if (items.length > 1) {
+        await drawRoute(items.map((d) => d.coord), color, token)
       }
     }
 
-  } else {
-    // ---- 单色模式 + 最短路径优化 ----
-    dayColors.value = []
-    let items = await searchAllPlaces(places)
-
-    if (isOptimize.value && items.length > 2) {
-      const beforeKm = calcTotalKm(items.map((d) => d.coord))
-      items = greedyOptimize(items)
-      const afterKm = calcTotalKm(items.map((d) => d.coord))
-      const saved = beforeKm - afterKm
-      optimizeInfo.value = saved > 0
-        ? `已优化！节省约 ${saved} km`
-        : "当前顺序已是最优"
+    if (token === renderToken) {
+      map.setFitView(undefined, false, [60, 60, 60, 60])
     }
-
-    const color = DAY_COLORS[0]
-    items.forEach((item, i) => addMarker(item.coord, String(i + 1), item.name, color))
-
-    if (items.length > 1) {
-      await drawRoute(items.map((d) => d.coord), color)
+  } finally {
+    if (token === renderToken) {
+      routeLoading.value = false
     }
   }
+}
 
-  map.setFitView(undefined, false, [60, 60, 60, 60])
-  routeLoading.value = false
+function scheduleRenderPlaces(places: string[]) {
+  if (!places?.length) return
+  if (renderTimer) clearTimeout(renderTimer)
+  renderTimer = setTimeout(() => {
+    renderTimer = null
+    void renderPlaces(places)
+  }, 250)
 }
 
 // ========================
@@ -461,6 +678,8 @@ async function renderPlaces(places: string[]) {
 
 async function flyToDestination(city: string) {
   await mapReadyPromise
+  if (!city) return
+  lockedCity = city.trim()
   const coord = await searchPlace(city)
   if (coord) { map.setZoom(13); map.setCenter(coord) }
 }
@@ -472,7 +691,7 @@ async function resizeMap() {
 
 function toggleOptimize() {
   isOptimize.value = !isOptimize.value
-  if (props.places.length > 1) renderPlaces(props.places)
+  if (props.places.length > 1) scheduleRenderPlaces(props.places)
 }
 
 async function selectMode(mode: any) {
@@ -484,8 +703,26 @@ async function planRoute() {
   await renderPlaces(props.places)
 }
 
-watch(() => props.places, (p) => { if (p?.length) renderPlaces(p) }, { deep: true })
-watch(() => props.dayGroups, () => { if (props.places.length) renderPlaces(props.places) }, { deep: true })
+// places 与 dayGroups 常同时更新：合并为一次防抖渲染，避免双 watch 叠请求
+watch(
+  () => [props.places, props.dayGroups] as const,
+  ([p]) => { scheduleRenderPlaces(p || []) },
+  { deep: true },
+)
 
-defineExpose({ flyToDestination, resizeMap })
+// 目的地一有值就锁定，防止后续搜索 city 为空
+watch(
+  () => props.destination,
+  (city, prev) => {
+    if (city?.trim()) lockedCity = city.trim()
+    // 换城市时清掉旧缓存，避免跨城脏坐标
+    if (prev && city && prev !== city) {
+      coordCache.clear()
+      poiCache.clear()
+    }
+  },
+  { immediate: true },
+)
+
+defineExpose({ flyToDestination, resizeMap, seedCoords, lockCity })
 </script>

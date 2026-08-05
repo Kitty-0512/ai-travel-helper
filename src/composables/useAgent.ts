@@ -162,6 +162,14 @@ export function useAgent() {
       case 'itinerary_json': {
         state.itinerary = event.data as ItineraryPayload
         state.statusText = '行程数据已生成'
+        // 若流式文案被清洗后过短，用结构化 days 生成可读兜底，避免左侧有卡、中间空白
+        if (!state.cleanMarkdown || state.cleanMarkdown.length < 40) {
+          const fallback = buildMarkdownFromItinerary(event.data as ItineraryPayload)
+          if (fallback) {
+            state.cleanMarkdown = fallback
+            if (!state.rawMarkdown) state.rawMarkdown = fallback
+          }
+        }
         break
       }
 
@@ -260,7 +268,14 @@ export function useAgent() {
     days: number
     styles: string[]
     itinerary: import('@/api/agent').ItineraryPayload | null
-    placesDetail: { name: string; lng: number; lat: number }[] | null
+    placesDetail: {
+      name: string
+      lng: number
+      lat: number
+      address?: string
+      tel?: string
+      category?: string
+    }[] | null
     markdownText?: string
   }): void {
     Object.assign(state, createInitialState())
@@ -319,39 +334,58 @@ export function useAgent() {
 // 工具函数：从 Markdown 中移除 JSON 代码块
 // ============================================================
 
+/** 当流式文案缺失时，用 itinerary_json 拼一份可读 Markdown（仅展示兜底） */
+function buildMarkdownFromItinerary(payload: ItineraryPayload): string {
+  const days = payload?.days
+  if (!Array.isArray(days) || days.length === 0) return ''
+  const lines: string[] = ['### 行程概览', '']
+  for (const d of days) {
+    lines.push(`#### Day ${d.day}`)
+    if (d.morning) lines.push(`- **上午**：${d.morning}`)
+    if (d.afternoon) lines.push(`- **下午**：${d.afternoon}`)
+    if (d.evening) lines.push(`- **晚上**：${d.evening}`)
+    lines.push('')
+  }
+  return lines.join('\n').trim()
+}
+
 /**
  * 实时去除 Markdown 中的 ```json/```xml 代码块以及 LLM 误输出的 tool_calls XML。
- * 策略：先整块删 + 再逐行删 + 最后兜底截断，不做内容保留以避免 XML 残留文本混入正文。
+ * 只清理工具相关标签，避免误伤正文 Markdown（加粗/标题等可读性格式）。
  */
 function cleanJsonBlock(raw: string): string {
   let cleaned = raw
+  const toolTags = ['tool_calls', 'function_calls', 'invoke', 'parameter']
+  const toolTagAlt = toolTags.join('|')
 
   // 1. 移除 ```json / ```xml 代码块
   cleaned = cleaned.replace(/```(?:json|xml)[\s\S]*?```/g, '')
   cleaned = cleaned.replace(/```(?:json|xml)[\s\S]*$/g, '')
 
-  // 2. 整块删除 XML 块（重复直到稳定，处理嵌套）
-  const blockTags = ['tool_calls', 'function_calls', 'invoke', 'parameter']
+  // 2. 整块删除工具 XML（重复直到稳定，处理嵌套）
   for (let i = 0; i < 20; i++) {
     const prev = cleaned
-    for (const tag of blockTags) {
+    for (const tag of toolTags) {
       cleaned = cleaned.replace(new RegExp(`<${tag}[^>]*>[\\s\\S]*?<\\/${tag}>`, 'g'), '')
+      cleaned = cleaned.replace(new RegExp(`<${tag}[^>]*\\/>`, 'g'), '')
     }
-    // 也处理自闭合
-    cleaned = cleaned.replace(/<[a-zA-Z_][\w.-]*(?:\s[^>]*)?\s*\/>/g, '')
     if (cleaned === prev) break
   }
 
-  // 3. 逐行过滤：流式输出中若某行以 XML 标签开头，整行丢弃
+  // 3. 逐行过滤：工具 XML 行、以及误当作正文的工具日志
   cleaned = cleaned
     .split('\n')
-    .filter((line) => !/^\s*<\/?(?:tool_calls|function_calls|invoke|parameter)\b/.test(line))
+    .filter((line) => {
+      if (new RegExp(`^\\s*<\\/?(?:${toolTagAlt})\\b`).test(line)) return false
+      if (/^\s*已执行工具调用[：:]/.test(line)) return false
+      if (/^\s*【已收集的真实工具数据】/.test(line)) return false
+      if (/^\s*[-*]\s*(调用|结果)[：:]/.test(line)) return false
+      return true
+    })
     .join('\n')
 
-  // 4. 兜底：从首个残留 XML 标签截断到末尾（流式未闭合场景）
-  cleaned = cleaned.replace(/<(tool_calls|function_calls|invoke|parameter)\b[^>]*>[\s\S]*$/g, '')
-  // 其他泛用标签同样截断
-  cleaned = cleaned.replace(/<[a-zA-Z_][\w.-]*(?:\s[^>]*)?>[\s\S]*$/g, '')
+  // 4. 兜底：仅从残留的工具 XML 开标签截断到末尾（流式未闭合）
+  cleaned = cleaned.replace(new RegExp(`<(?:${toolTagAlt})\\b[^>]*>[\\s\\S]*$`, 'g'), '')
 
   // 5. 清理多余空行
   cleaned = cleaned.replace(/\n{3,}/g, '\n\n')
