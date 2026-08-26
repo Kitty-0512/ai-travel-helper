@@ -1,0 +1,35 @@
+# Fly.io 配置 —— ai-travel-helper
+# 部署：在本目录执行 .\scripts\deploy-fly.ps1（需先 flyctl auth login）
+
+app = "ai-travel-helper-kitty"
+primary_region = "nrt"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  ENV = "development"
+  PORT = "8000"
+  MEMORY_FALLBACK_INPROCESS = "true"
+  TRACE_FALLBACK_INPROCESS = "true"
+  RATE_LIMIT_ENABLED = "false"
+  MCP_ENABLED = "true"
+  STATIC_DIR = "../static"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+    method = "GET"
+    path = "/api/health/live"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

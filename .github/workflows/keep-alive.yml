@@ -1,9 +1,10 @@
 name: Keep Render Alive
 
+# 定时 ping 已暂停（服务 Suspended / 不需要 keep-alive 时避免刷邮件）。
+# 需要恢复时：取消下面 schedule 注释，或在 GitHub Actions 里重新 Enable workflow。
 on:
-  schedule:
-    # 每 5 分钟 ping 一次，防止 Render 免费实例休眠
-    - cron: '*/5 * * * *'
+  # schedule:
+  #   - cron: '*/5 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -12,16 +13,38 @@ jobs:
     steps:
       - name: Ping health check
         run: |
-          set -e
+          set -euo pipefail
           URL="https://ai-travel-helper.onrender.com/api/health/live"
+          BODY_FILE="$(mktemp)"
+
           for i in 1 2 3; do
-            if curl -sf --max-time 30 "$URL"; then
-              echo ""
-              echo "Ping ok (attempt $i)"
+            HTTP_CODE=$(curl -sS --max-time 30 -o "$BODY_FILE" -w "%{http_code}" "$URL" || echo "000")
+            BODY=$(cat "$BODY_FILE" || true)
+
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "$BODY"
+              echo "Ping ok (attempt $i, HTTP $HTTP_CODE)"
               exit 0
             fi
-            echo "Attempt $i failed, retrying..."
-            sleep 5
+
+            echo "Attempt $i failed: HTTP $HTTP_CODE"
+            echo "Response body:"
+            echo "$BODY"
+            echo "---"
+
+            # Suspended：keep-alive 无法唤醒，继续失败只会刷邮件
+            if echo "$BODY" | grep -qi "service has been suspended\|Service Suspended"; then
+              echo "::warning::Render service is SUSPENDED (not sleeping). Keep-alive cannot wake it."
+              echo "Go to https://dashboard.render.com/ → resume/redeploy the service,"
+              echo "or wait for the next free-tier billing cycle if the quota is exhausted."
+              exit 0
+            fi
+
+            if [ "$i" -lt 3 ]; then
+              echo "Retrying in 5s..."
+              sleep 5
+            fi
           done
-          echo "All ping attempts failed"
+
+          echo "::error::All ping attempts failed (last HTTP $HTTP_CODE)"
           exit 1

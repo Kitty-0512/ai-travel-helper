@@ -189,7 +189,7 @@
                     :class="flowDotClass(idx)"
                   >
                     <span v-if="flowActiveIndex === idx && agent.state.loading" class="h-2.5 w-2.5 animate-pulse rounded-full bg-white"></span>
-                    <span v-else-if="idx < flowActiveIndex">✓</span>
+                    <span v-else-if="flowActiveIndex >= 5 || idx < flowActiveIndex">✓</span>
                     <span v-else>{{ idx + 1 }}</span>
                   </div>
                   <span
@@ -197,10 +197,10 @@
                     :class="idx <= flowActiveIndex ? 'font-medium text-slate-700' : 'text-slate-400'"
                   >{{ s.label }}</span>
                 </div>
-                <div
+                  <div
                   v-if="idx < flowSteps.length - 1"
-                  class="mb-4 h-0.5 w-3 shrink-0 rounded-full"
-                  :class="idx < flowActiveIndex ? 'bg-blue-500' : 'bg-slate-200'"
+                  class="mb-4 h-0.5 w-2 shrink-0 rounded-full sm:w-3"
+                  :class="idx < flowActiveIndex || flowActiveIndex >= 5 ? 'bg-blue-500' : 'bg-slate-200'"
                 ></div>
               </template>
             </div>
@@ -326,28 +326,39 @@ import { listSessions, getSession, deleteSession, type SessionSummary } from './
 
 const agent = useAgent()
 
-/** 生成按钮上方的流程豆豆：理解 → 调工具 → 写行程 → 完成 */
+/** 生成按钮上方的流程豆豆：首次生成 + 多轮追问 */
 const flowSteps = [
   { key: 'understand', label: '理解需求' },
   { key: 'tools', label: '调用工具' },
   { key: 'write', label: '生成行程' },
   { key: 'done', label: '完成' },
+  { key: 'followup', label: '多轮追问' },
 ] as const
 
 const flowActiveIndex = computed(() => {
-  if (agent.state.error) return Math.min(agent.state.step > 0 ? 1 : 0, 3)
-  if (agent.state.donePayload || (agent.state.cleanMarkdown && !agent.state.loading)) return 3
-  if (agent.state.cleanMarkdown || agent.state.itinerary) return 2
-  if (agent.state.toolCalls.length > 0) return 1
-  if (agent.state.loading || agent.state.step > 0) return 0
+  const s = agent.state
+  if (s.phase === 'followup' || s.followupDone) {
+    if (s.followupDone && !s.loading) return 5
+    return 4
+  }
+  if (s.error && s.phase !== 'followup') return Math.min(s.step > 0 ? 1 : 0, 3)
+  if (s.sessionId && (s.donePayload || s.cleanMarkdown) && !s.loading) return 3
+  if (s.cleanMarkdown || s.itinerary) return 2
+  if (s.toolCalls.length > 0) return 1
+  if (s.loading || s.step > 0 || s.phase === 'generate') return 0
   return -1
 })
 
 function flowDotClass(idx: number): string {
   const active = flowActiveIndex.value
+  const s = agent.state
+  if (active >= 5) return 'bg-blue-500 text-white shadow-sm'
   if (idx < active) return 'bg-blue-500 text-white shadow-sm'
-  if (idx === active && agent.state.loading) return 'bg-blue-500 text-white ring-4 ring-blue-100'
+  if (idx === active && s.loading) return 'bg-blue-500 text-white ring-4 ring-blue-100'
   if (idx === active) return 'bg-blue-500 text-white'
+  if (idx === 4 && active === 3 && s.sessionId) {
+    return 'bg-white text-blue-500 ring-2 ring-dashed ring-blue-300'
+  }
   return 'bg-white text-slate-400 ring-1 ring-slate-200'
 }
 

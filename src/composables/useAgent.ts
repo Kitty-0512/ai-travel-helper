@@ -49,6 +49,8 @@ export interface ToolCallRecord {
 export interface AgentState {
   /** 是否正在请求中 */
   loading: boolean
+  /** 当前阶段：首次生成 / 多轮追问 */
+  phase: 'idle' | 'generate' | 'followup'
   /** 当前状态文字（如 "正在搜索北京的景点…"） */
   statusText: string
   /** 当前是第几步 */
@@ -69,6 +71,8 @@ export interface AgentState {
   requestId: string
   /** 错误信息 */
   error: ErrorPayload | null
+  /** 是否已至少完成过一轮追问 */
+  followupDone: boolean
 }
 
 // ============================================================
@@ -78,6 +82,7 @@ export interface AgentState {
 function createInitialState(): AgentState {
   return {
     loading: false,
+    phase: 'idle',
     statusText: '',
     step: 0,
     rawMarkdown: '',
@@ -88,6 +93,7 @@ function createInitialState(): AgentState {
     sessionId: '',
     requestId: '',
     error: null,
+    followupDone: false,
   }
 }
 
@@ -210,6 +216,7 @@ export function useAgent() {
     // 重置状态
     Object.assign(state, createInitialState())
     state.loading = true
+    state.phase = 'generate'
     state.statusText = '正在启动旅行规划...'
 
     abortController = new AbortController()
@@ -239,6 +246,7 @@ export function useAgent() {
     }
 
     state.loading = true
+    state.phase = 'followup'
     state.statusText = '正在根据你的意见修改行程...'
     state.error = null
 
@@ -246,6 +254,7 @@ export function useAgent() {
 
     try {
       await continueChat(state.sessionId, message, handleEvent, abortController.signal)
+      state.followupDone = true
     } catch (err: unknown) {
       if ((err as Error).name !== 'AbortError') {
         state.error = {
