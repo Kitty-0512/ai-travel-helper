@@ -1,114 +1,127 @@
 ﻿# Travel Planner
 
-鍩轰簬 AI Agent 鐨勬櫤鑳芥梾琛岃鍒掑伐鍏封€斺€旇緭鍏ョ洰鐨勫湴銆佸ぉ鏁板拰鍋忓ソ锛孉gent 鑷姩璋冪敤澶╂皵銆佹櫙鐐广€佽矾绾跨瓑宸ュ叿锛屾祦寮忕敓鎴愬畬鏁磋绋嬶紝楂樺痉鍦板浘鍙鍖栨爣娉紝骞舵敮鎸佸杞拷闂笌 PDF 瀵煎嚭銆?
+基于 AI Agent 的智能旅行规划工具——输入目的地、天数和偏好，Agent 自动调用天气、景点、路线等工具，流式生成完整行程，高德地图可视化标注，并支持多轮追问与 PDF 导出。
 
-> 浜戠鍏嶈垂棰濆害鍙兘鏆傚仠锛涙帹鑽愮敤鏈〉鎴浘 + 鏈湴杩愯鍋氭紨绀恒€?
-
----
-
-## 鐣岄潰婕旂ず锛堝叏鍔熻兘锛?
-
-宸︿晶銆岀敓鎴愯绋嬨€嶄笂鏂规湁 **Agent 鎵ц娴佺▼** 浜旀璞嗚眴锛?
-
-`鐞嗚В闇€姹?鈫?璋冪敤宸ュ叿 鈫?鐢熸垚琛岀▼ 鈫?瀹屾垚 鈫?澶氳疆杩介棶`
-
-### 1. 鍒濆绌虹姸鎬?
-
-![01 绌虹姸鎬乚(docs/screenshots/01-empty.png)
-
-### 2. 濉啓鐩殑鍦?/ 澶╂暟 / 椋庢牸
-
-![02 琛ㄥ崟灏辩华](docs/screenshots/02-form-ready.png)
-
-### 3. 鍚姩鐢熸垚锛堣眴璞嗙 1 姝ワ級
-
-![03 鐢熸垚涓璢(docs/screenshots/03-generating-flow.png)
-
-### 4. 宸ュ叿璋冪敤鏄庣粏锛堝ぉ姘?/ 鏅偣 / 璺嚎锛?
-
-![04 宸ュ叿璋冪敤](docs/screenshots/04-tools.png)
-
-### 5. 琛岀▼鏂囨鐢熸垚瀹屾垚 + 鍙拷闂叆鍙?
-
-棣栨鐢熸垚缁撴潫鍚庯紝璞嗚眴鍋滃湪銆屽畬鎴愩€嶏紝绗?5 姝ャ€屽杞拷闂€嶈櫄绾垮湀鎻愮ず鍙户缁紱搴曢儴鍑虹幇銆岀户缁慨鏀广€嶈緭鍏ユ銆?
-
-![05 琛岀▼缁撴灉](docs/screenshots/05-result.png)
-
-### 6. 鍦板浘涓庤矾绾胯鍒?
-
-鍒嗘棩鍥句緥銆侀┚杞?姝ヨ/楠戣/鏈€鐭矾寰勶紱渚ц竟鍚屾琛岀▼璇︽儏鍗＄墖銆?
-
-![06 鍦板浘](docs/screenshots/06-map.png)
-
-### 7. 澶氳疆杩介棶锛堝～鍐欎慨鏀瑰缓璁級
-
-渚嬪锛氥€岀浜屽ぉ鍑忓皯鏅偣锛屽瀹夋帓缇庨銆嶁€斺€斿搴旇兘鍔涳細浼氳瘽鍐呮敼琛岀▼銆?
-
-![07 杩介棶杈撳叆](docs/screenshots/07-followup-ready.png)
-
-### 8. 杩介棶鎵ц涓紙璞嗚眴杩涘叆绗?5 姝ワ級
-
-![08 杩介棶杩涜涓璢(docs/screenshots/08-followup-running.png)
-
-### 9. 杩介棶瀹屾垚锛堜簲姝ュ叏閮ㄥ嬀閫夛級
-
-琛岀▼璇︽儏鍙殢杩介棶鏇存柊锛堝绗簩澶╂洿澶氱編椋熺偣锛夈€?
-
-![09 杩介棶瀹屾垚](docs/screenshots/09-followup-done.png)
-
-### 10. 瀵煎嚭 PDF
-
-鐢熸垚鎴愬姛鍚庛€屽鍑?PDF銆嶅彲鐢ㄣ€?
-
-![10 瀵煎嚭 PDF](docs/screenshots/10-export-pdf.png)
-
-鎴浘绱㈠紩瑙?[`docs/screenshots/README.md`](docs/screenshots/README.md)銆?
+> 云端免费额度可能暂停；推荐用本页截图 + 本地运行做演示。
 
 ---
 
-## 鍔熻兘姒傝
+## 界面演示（全功能）
 
-| 鑳藉姏 | 璇存槑 |
+左侧「生成行程」上方有 **Agent 执行流程** 五步豆豆：
+
+`理解需求 → 调用工具 → 生成行程 → 完成 → 多轮追问`
+
+### 1. 初始空状态
+
+![01 空状态](docs/screenshots/01-empty.png)
+
+### 2. 填写目的地 / 天数 / 风格
+
+![02 表单就绪](docs/screenshots/02-form-ready.png)
+
+### 3. 启动生成（豆豆第 1 步）
+
+![03 生成中](docs/screenshots/03-generating-flow.png)
+
+### 4. 工具调用明细（天气 / 景点 / 路线）
+
+![04 工具调用](docs/screenshots/04-tools.png)
+
+### 5. 行程文案生成完成 + 可追问入口
+
+首次生成结束后，豆豆停在「完成」，第 5 步「多轮追问」虚线圈提示可继续；底部出现「继续修改」输入框。
+
+![05 行程结果](docs/screenshots/05-result.png)
+
+### 6. 地图与路线规划
+
+分日图例、驾车/步行/骑行/最短路径；侧边同步行程详情卡片。
+
+![06 地图](docs/screenshots/06-map.png)
+
+### 7. 多轮追问（填写修改建议）
+
+例如：「第二天减少景点，多安排美食」——对应能力：会话内改行程。
+
+![07 追问输入](docs/screenshots/07-followup-ready.png)
+
+### 8. 追问执行中（豆豆进入第 5 步）
+
+![08 追问进行中](docs/screenshots/08-followup-running.png)
+
+### 9. 追问完成（五步全部勾选）
+
+行程详情可随追问更新（如第二天更多美食点）。
+
+![09 追问完成](docs/screenshots/09-followup-done.png)
+
+### 10. 导出 PDF
+
+生成成功后「导出 PDF」可用。
+
+![10 导出 PDF](docs/screenshots/10-export-pdf.png)
+
+### 11. 最短路径开关与路线重算
+
+地图区支持「最短路径」开关与「重新规划」，可直接展示路线优化能力。
+
+![11 最短路径](docs/screenshots/11-shortest-route.png)
+
+### 12. 地图点位弹窗：地址 / 电话 / 导航 / 门票
+
+点击地图上的定位点会弹出地点详情，包含地址、电话、导航链接，以及查看门票入口。
+
+![12 点位弹窗](docs/screenshots/12-poi-popup.png)
+
+截图索引见 [`docs/screenshots/README.md`](docs/screenshots/README.md)。
+
+---
+
+## 功能概览
+
+| 能力 | 说明 |
 |------|------|
-| 鏃呰瑙勫垝 | 鐩殑鍦?+ 澶╂暟 + 椋庢牸 鈫?Agent 缂栨帓 |
-| 娴佺▼鍙鍖?| 浜旀璞嗚眴鍚屾 SSE 闃舵锛堝惈澶氳疆杩介棶锛?|
-| 宸ュ叿璋冪敤 | 澶╂皵銆佹櫙鐐规悳绱€佽矾绾胯鍒掔瓑锛堝彲灞曞紑鏌ョ湅锛?|
-| 娴佸紡鏂囨 | Markdown 琛岀▼瀹炴椂杈撳嚭 |
-| 鍦板浘鍙鍖?| 楂樺痉鍦板浘銆佸垎鏃ユ爣娉ㄣ€佽矾寰勬ā寮忎笌鏈€鐭矾寰?|
-| 澶氳疆杩介棶 | 銆岀户缁慨鏀广€嶄細璇濆唴鏀硅绋?|
-| 鍘嗗彶璁板綍 | 渚ц竟鍙洖鐪?鍔犺浇鍘嗗彶浼氳瘽 |
-| PDF 瀵煎嚭 | 涓€閿鍑鸿绋?|
+| 旅行规划 | 目的地 + 天数 + 风格 → Agent 编排 |
+| 流程可视化 | 五步豆豆同步 SSE 阶段（含多轮追问） |
+| 工具调用 | 天气、景点搜索、路线规划等（可展开查看） |
+| 流式文案 | Markdown 行程实时输出 |
+| 地图可视化 | 高德地图、分日标注、路径模式与最短路径 |
+| POI 详情 | 点击定位点查看地址、电话、导航与门票入口 |
+| 多轮追问 | 「继续修改」会话内改行程 |
+| 历史记录 | 侧边可回看/加载历史会话 |
+| PDF 导出 | 一键导出行程 |
 
 ---
 
-## 鎶€鏈爤
+## 技术栈
 
-| 灞傜骇 | 鎶€鏈?|
+| 层级 | 技术 |
 |------|------|
-| 鍓嶇 | Vue 3 路 TypeScript 路 Vite 路 Tailwind CSS 路 楂樺痉 JS API 2.0 |
-| 鍚庣 | FastAPI 路 httpx 路 SSE 路 Redis 路 PostgreSQL |
-| Agent | DeepSeek 路 MCP 路 Planner-Executor 路 ReAct |
-| 閮ㄧ讲 | Docker 路 Render / 鍏跺畠浜戯紙鍙€夛級 |
+| 前端 | Vue 3 · TypeScript · Vite · Tailwind CSS · 高德 JS API 2.0 |
+| 后端 | FastAPI · httpx · SSE · Redis · PostgreSQL |
+| Agent | DeepSeek · MCP · Planner-Executor · ReAct |
+| 部署 | Docker · Render / 其它云（可选） |
 
 ---
 
-## 蹇€熷紑濮?
+## 快速开始
 
-### 鏈湴寮€鍙?
+### 本地开发
 
 ```bash
-# 鍚庣锛堥粯璁?8000锛涜嫢绔彛琚崰鐢細--port 8001锛屽苟鏀?vite.config.ts 浠ｇ悊锛?
+# 后端（默认 8000；若端口被占用：--port 8001，并改 vite.config.ts 代理）
 cd backend
-cp .env.example .env        # 濉叆 DEEPSEEK_API_KEY銆丄MAP_API_KEY
+cp .env.example .env        # 填入 DEEPSEEK_API_KEY、AMAP_API_KEY
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 
-# 鍓嶇锛堟柊缁堢锛?
+# 前端（新终端）
 npm install
 npm run dev
 ```
 
-鍓嶇 `http://localhost:5174`锛坄VITE_API_BASE_URL` 鐣欑┖鏃惰蛋 Vite `/api` 浠ｇ悊锛夈€?
+前端 `http://localhost:5174`（`VITE_API_BASE_URL` 留空时走 Vite `/api` 代理）。
 
 ### Docker Compose
 
@@ -119,47 +132,46 @@ docker compose up --build
 
 ---
 
-## 鐜鍙橀噺
+## 环境变量
 
-**鍓嶇**锛坄.env.development`锛?
+**前端**（`.env.development`）
 
-| 鍙橀噺 | 璇存槑 |
+| 变量 | 说明 |
 |------|------|
-| `VITE_API_BASE_URL` | 鍚庣鍦板潃锛堝紑鍙戠暀绌鸿蛋浠ｇ悊锛?|
-| `VITE_API_SECRET_KEY` | 涓庡悗绔?`API_SECRET_KEY` 涓€鑷?|
-| `VITE_AMAP_KEY` | 楂樺痉 JS API Key |
-| `VITE_AMAP_SECURITY_CODE` | 楂樺痉 JS 瀹夊叏瀵嗛挜 |
+| `VITE_API_BASE_URL` | 后端地址（开发留空走代理） |
+| `VITE_API_SECRET_KEY` | 与后端 `API_SECRET_KEY` 一致 |
+| `VITE_AMAP_KEY` | 高德 JS API Key |
+| `VITE_AMAP_SECURITY_CODE` | 高德 JS 安全密钥 |
 
-**鍚庣**锛坄backend/.env`锛?
+**后端**（`backend/.env`）
 
-| 鍙橀噺 | 璇存槑 |
+| 变量 | 说明 |
 |------|------|
 | `DEEPSEEK_API_KEY` | DeepSeek API Key |
-| `AMAP_API_KEY` | 楂樺痉 Web 鏈嶅姟 Key |
-| `API_SECRET_KEY` | 鍓嶅悗绔壌鏉?|
-| `REDIS_URL` | Redis锛堝彲閫夛紝寮€鍙戠敤鍐呭瓨妯″紡锛?|
-| `DATABASE_URL` | PostgreSQL锛堝彲閫夛紝寮€鍙戠敤 JSON 鏂囦欢钀藉湴锛?|
+| `AMAP_API_KEY` | 高德 Web 服务 Key |
+| `API_SECRET_KEY` | 前后端鉴权 |
+| `REDIS_URL` | Redis（可选，开发用内存模式） |
+| `DATABASE_URL` | PostgreSQL（可选，开发用 JSON 文件落地） |
 
 ---
 
 ## API
 
-| 鏂规硶 | 璺緞 | 璇存槑 |
+| 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/agent/generate` | SSE 娴佸紡鐢熸垚琛岀▼ |
-| POST | `/api/agent/chat` | SSE 澶氳疆淇敼 |
-| GET | `/api/sessions` | 鍘嗗彶浼氳瘽 |
-| GET/DELETE | `/api/sessions/{id}` | 浼氳瘽璇︽儏 / 鍒犻櫎 |
-| GET | `/api/memory` | 鐢ㄦ埛鍋忓ソ |
-| GET | `/api/trace/{request_id}` | Agent 鎵ц杞ㄨ抗 |
-| GET | `/api/health/live` | 瀛樻椿鎺㈤拡 |
-| GET | `/api/health/ready` | 灏辩华鎺㈤拡 |
+| POST | `/api/agent/generate` | SSE 流式生成行程 |
+| POST | `/api/agent/chat` | SSE 多轮修改 |
+| GET | `/api/sessions` | 历史会话 |
+| GET/DELETE | `/api/sessions/{id}` | 会话详情 / 删除 |
+| GET | `/api/memory` | 用户偏好 |
+| GET | `/api/trace/{request_id}` | Agent 执行轨迹 |
+| GET | `/api/health/live` | 存活探针 |
+| GET | `/api/health/ready` | 就绪探针 |
 
-閴存潈锛歚X-API-Key` + `X-User-Id`
+鉴权：`X-API-Key` + `X-User-Id`
 
 ---
 
-## 閮ㄧ讲
+## 部署
 
-Docker 鍗曢暅鍍忓彲閮ㄧ讲鍒?Render / Railway 绛夈€傚厤璐归搴︾敤灏藉悗绾夸笂浼氭殏鍋滐紝鍙敤鏈粨搴撴埅鍥句笌鏈湴杩愯鍋氭紨绀恒€?
-
+Docker 单镜像可部署到 Render / Railway 等。免费额度用尽后线上会暂停，可用本仓库截图与本地运行做演示。
