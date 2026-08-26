@@ -1,18 +1,19 @@
-# Demo Screenshots
+﻿# Demo Screenshots
 
-本地真实跑通后截取（`scripts/capture-readme-screens.mjs`）。
+鏈湴鐪熷疄璺戦€氬悗鎴彇锛坄scripts/capture-readme-screens.mjs`锛夈€?
 
-| 文件 | 说明 |
+| 鏂囦欢 | 璇存槑 |
 |------|------|
-| `01-empty.png` | 初始空状态 |
-| `02-form-ready.png` | 填表 + 风格，可生成 |
-| `03-generating-flow.png` | 豆豆第 1 步，执行状态 |
-| `04-tools.png` | 工具调用展开 / 进行中 |
-| `05-result.png` | 行程正文 + 追问入口 |
-| `06-map.png` | 地图与分日图例 |
-| `07-followup-ready.png` | 填写多轮追问 |
-| `08-followup-running.png` | 追问执行中 |
-| `09-followup-done.png` | 五步豆豆全勾 + 行程已按追问调整 |
-| `10-export-pdf.png` | 导出 PDF 可用 |
+| `01-empty.png` | 鍒濆绌虹姸鎬?|
+| `02-form-ready.png` | 濉〃 + 椋庢牸锛屽彲鐢熸垚 |
+| `03-generating-flow.png` | 璞嗚眴绗?1 姝ワ紝鎵ц鐘舵€?|
+| `04-tools.png` | 宸ュ叿璋冪敤灞曞紑 / 杩涜涓?|
+| `05-result.png` | 琛岀▼姝ｆ枃 + 杩介棶鍏ュ彛 |
+| `06-map.png` | 鍦板浘涓庡垎鏃ュ浘渚?|
+| `07-followup-ready.png` | 濉啓澶氳疆杩介棶 |
+| `08-followup-running.png` | 杩介棶鎵ц涓?|
+| `09-followup-done.png` | 浜旀璞嗚眴鍏ㄥ嬀 + 琛岀▼宸叉寜杩介棶璋冩暣 |
+| `10-export-pdf.png` | 瀵煎嚭 PDF 鍙敤 |
 
-五步豆豆：理解需求 → 调用工具 → 生成行程 → 完成 → 多轮追问。
+浜旀璞嗚眴锛氱悊瑙ｉ渶姹?鈫?璋冪敤宸ュ叿 鈫?鐢熸垚琛岀▼ 鈫?瀹屾垚 鈫?澶氳疆杩介棶銆?
+
