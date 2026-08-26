@@ -28,7 +28,7 @@ export default defineConfig({
     // ──────────────────────────────────────
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',   // FastAPI 后端地址
+        target: 'http://127.0.0.1:8000',   // FastAPI 后端；若与其它项目冲突可改为 8001
         changeOrigin: true,
         // SSE 流式响应：只修改响应头，不接管 pipe，避免数据重复
         configure: (proxy) => {

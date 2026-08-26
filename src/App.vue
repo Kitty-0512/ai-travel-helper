@@ -175,8 +175,40 @@
           </div>
         </div>
 
-        <!-- 底部按钮 -->
+        <!-- Agent 流程豆豆（生成按钮上方） -->
         <div class="mt-auto flex flex-col gap-3">
+          <div class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+            <div class="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              Agent 执行流程
+            </div>
+            <div class="flex items-center justify-between gap-1">
+              <template v-for="(s, idx) in flowSteps" :key="s.key">
+                <div class="flex min-w-0 flex-1 flex-col items-center gap-1.5">
+                  <div
+                    class="flex h-7 w-7 items-center justify-center rounded-full text-[11px] font-bold transition-all"
+                    :class="flowDotClass(idx)"
+                  >
+                    <span v-if="flowActiveIndex === idx && agent.state.loading" class="h-2.5 w-2.5 animate-pulse rounded-full bg-white"></span>
+                    <span v-else-if="idx < flowActiveIndex">✓</span>
+                    <span v-else>{{ idx + 1 }}</span>
+                  </div>
+                  <span
+                    class="max-w-full truncate text-center text-[10px] leading-tight"
+                    :class="idx <= flowActiveIndex ? 'font-medium text-slate-700' : 'text-slate-400'"
+                  >{{ s.label }}</span>
+                </div>
+                <div
+                  v-if="idx < flowSteps.length - 1"
+                  class="mb-4 h-0.5 w-3 shrink-0 rounded-full"
+                  :class="idx < flowActiveIndex ? 'bg-blue-500' : 'bg-slate-200'"
+                ></div>
+              </template>
+            </div>
+            <p v-if="agent.state.statusText" class="mt-2 truncate text-[11px] text-blue-600" :title="agent.state.statusText">
+              {{ agent.state.statusText }}
+            </p>
+          </div>
+
           <button
             @click="handleGenerate"
             :disabled="agent.state.loading || !destination || !days"
@@ -293,6 +325,32 @@ import { listSessions, getSession, deleteSession, type SessionSummary } from './
 // ==========================================================
 
 const agent = useAgent()
+
+/** 生成按钮上方的流程豆豆：理解 → 调工具 → 写行程 → 完成 */
+const flowSteps = [
+  { key: 'understand', label: '理解需求' },
+  { key: 'tools', label: '调用工具' },
+  { key: 'write', label: '生成行程' },
+  { key: 'done', label: '完成' },
+] as const
+
+const flowActiveIndex = computed(() => {
+  if (agent.state.error) return Math.min(agent.state.step > 0 ? 1 : 0, 3)
+  if (agent.state.donePayload || (agent.state.cleanMarkdown && !agent.state.loading)) return 3
+  if (agent.state.cleanMarkdown || agent.state.itinerary) return 2
+  if (agent.state.toolCalls.length > 0) return 1
+  if (agent.state.loading || agent.state.step > 0) return 0
+  return -1
+})
+
+function flowDotClass(idx: number): string {
+  const active = flowActiveIndex.value
+  if (idx < active) return 'bg-blue-500 text-white shadow-sm'
+  if (idx === active && agent.state.loading) return 'bg-blue-500 text-white ring-4 ring-blue-100'
+  if (idx === active) return 'bg-blue-500 text-white'
+  return 'bg-white text-slate-400 ring-1 ring-slate-200'
+}
+
 const itinerary = useItinerary({
   itinerary: computed(() => agent.state.itinerary),
   donePayload: computed(() => agent.state.donePayload),
